@@ -1,0 +1,8 @@
+_commit: v2.1.3
+_src_path: gh:mopidy/cookiecutter-mopidy-ext
+author_email: rtdeamicis@gmail.com
+author_full_name: Local Tourist
+dist_name: mopidy-musicwall
+ext_name: musicwall
+github_username: rdeamici
+short_description: Mopidy extension for interacting with a music wall
