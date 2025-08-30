@@ -20,9 +20,8 @@ class Extension(ext.Extension):
 
     def get_config_schema(self):
         schema = super().get_config_schema()
-        # TODO: Comment in and edit, or remove entirely
-        #schema["username"] = config.String()
-        #schema["password"] = config.Secret()
+        schema["port"] = config.String()
+        schema["baudrate"] = config.Integer()
         return schema
 
     def setup(self, registry):
@@ -30,18 +29,19 @@ class Extension(ext.Extension):
         # in a single extension.
 
         # TODO: Edit or remove entirely
-        from .frontend import FoobarFrontend
-        registry.add("frontend", FoobarFrontend)
+        from .frontend import MusicWallFrontend
+        registry.add("frontend", MusicWallFrontend)
 
-        # TODO: Edit or remove entirely
-        from .backend import FoobarBackend
-        registry.add("backend", FoobarBackend)
+        # registry.add(
+        #     "http:app", {"name": self.ext_name, "factory": musicwall_factory},
+        # )
 
-        # TODO: Edit or remove entirely
-        registry.add(
-            "http:static",
-            {
-                "name": self.ext_name,
-                "path": str(pathlib.Path(__file__).parent / "static"),
-            },
-        )
+# def musicwall_factory(config, core):
+#     from tornado.web import StaticFileHandler
+#     from .handlers import HttpHandler
+
+#     path = pathlib.Path(__file__).parent / "static"
+
+#     return [
+#         ('/play', HttpHandler, {"core": core, "config": config})
+#     ]

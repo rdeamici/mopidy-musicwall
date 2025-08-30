@@ -2,108 +2,283 @@ import logging
 import os
 import threading
 import time
-
+import json
 import pykka
 import requests
 import io
-from mopidy import core
+import serial
+from mopidy.core import CoreListener
+from urllib.parse import quote
+from enum import Enum, auto
 
 from . import Extension
 
 logger = logging.getLogger(__name__)
 
+PLAY = 0
+STOP = 1
+REGISTER = 2
+DEBUG = 3
 
-class NowPlayingFrontend(pykka.ThreadingActor, core.CoreListener):
-    def __init__(self, config, core):
-        super().__init__()
-        self.core = core
-        self.config = config
+VALID_INCOMING_COMMANDS = { PLAY, STOP, REGISTER, DEBUG }
 
-        # relies on mopidy-http to be configured and running
-        self.hostname = self.config.get("http").get("hostname")
-        self.port = self.config.get("http").get("port")
+REGISTER_ACK = 0
+INFO = 1
+LIGHT_ON = 2
+LIGHT_OFF = 3
+POWER_ON = 4
+POWER_OFF = 5
+NEW_CENTRAL = 6
 
-        # move hardcoded to config
-        self.fill_percent = 0.7
-        self.framebuffer_number = 0
-        self.framebuffer = f"fb{self.framebuffer_number}"
-        self.framebuffer_dimensions = open(
-            f"/sys/class/graphics/{self.framebuffer}/virtual_size", "r"
-        ).read()
+VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO, LIGHT_ON, LIGHT_OFF, POWER_ON, POWER_OFF, NEW_CENTRAL }
 
-    def write_framebuffer(self):
-        with open(f"/dev/{self.framebuffer}", "wb") as f:
-            f.write(self.screen.get_buffer())
+
+OUTGOING_SERIAL_COMMANDS = {
+    "INFO": 1,
+    "LIGHT_ON": 2,
+    "LIGHT_OFF": 3,
+    "POWER_ON": 4,
+    "POWER_OFF": 5,
+}
+
+class OutgoingSerialHandler(pykka.ThreadingActor):
+    def __init__(self, serial_port):
+        super(OutgoingSerialHandler, self).__init__()
+        self.serial_port = serial_port
+        self.lock = threading.Lock()
+        logger.debug("OutgoingSerialHandler initialized")
+        logger.debug(f"OutgoingSerialHandler serial_port is open? {self.serial_port.is_open}")
+
+    def send_message(self, message: str):
+        with self.lock:
+            logger.debug(f"OutgoingSerialHandler sending message: {message}")
+            try:
+                numBytes = self.serial_port.write((message + '\n').encode('utf-8'))   # newline is important
+                logger.debug(f"OutgoingSerialHandler sent {numBytes} bytes")
+            except Exception as e:
+                logger.debug(f"OutgoingSerialHandler encountered an error: {e}")
+class IncomingSerialHandler(pykka.ThreadingActor):
+    def __init__(self, serial_port, frontend_proxy):
+        super(IncomingSerialHandler, self).__init__()
+        self.frontend_proxy = frontend_proxy
+        self.serial_port = serial_port
+        logger.debug("IncomingSerialHandler initialized")
+        logger.debug(f"IncomingSerialHandler serial_port is open? {self.serial_port.is_open}")
 
     def on_start(self):
-        self.surfaceSize = tuple(
-            int(el) for el in self.framebuffer_dimensions.strip().split(",")
-        )
-        self.screen = pygame.Surface(self.surfaceSize)
-        self.screen.fill((0, 0, 0))
-        self.write_framebuffer()
+        self.running = True
+        self.thread = threading.Thread(target=self.read_loop, daemon=True)
+        self.thread.start()    
+    
+    def read_loop(self):
+        while self.running:
+            line = self.serial_port.readline()
+            if line:
+                logger.debug(f"IncomingSerialHandler received: {line}")
+                self.frontend_proxy.transform_serial(line)
+            
+    def on_stop(self):
+        self.running = False
+        if self.thread.is_alive():
+            self.thread.join()
+            
+
+
+class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
+    def __init__(self, config, core):
+        super(MusicWallFrontend, self).__init__()
+        self.core = core
+        self.config = config["musicwall"]
+
+        # relies on mopidy-http to be configured and running
+        self.ser_port = self.config.get("port")
+        self.baudrate = self.config.get("baudrate")
+        self.mac_album_dict = {}
+        self.current_album = None
+        self.state = "listening"
+        logger.debug(f"MusicWallFrontend initialized on serial port {self.ser_port} with baudrate {self.baudrate}")
+
+    def on_start(self):
+        self.serial = serial.Serial(self.ser_port, self.baudrate, timeout=1)
+        self.incoming_handler = IncomingSerialHandler.start(self.serial, self.actor_ref.proxy())
+        self.outgoing_handler_proxy = OutgoingSerialHandler.start(self.serial).proxy()
 
     def on_stop(self):
-        self.screen.fill((0, 0, 0))
-        self.write_framebuffer()
+        self.serial.close()
+        self.incoming_handler.stop()
+        self.outgoing_handler_proxy.actor_ref.stop()
 
-    def playback_state_changed(self, old_state, new_state):
-        if new_state == 'stopped':
-            self.screen.fill((0, 0, 0))
-            self.write_framebuffer()
-
-    def update_image(self, image_path):
-        try:
-            image, image_rect = self.transformScaleKeepRatio(
-                pygame.image.load(image_path),
-                tuple(element * self.fill_percent for element in self.surfaceSize),
-            )
-            self.screen.fill((0, 0, 0))
-            self.screen.blit(image, image_rect)
-            self.write_framebuffer()
-
-        except Exception as e:
-            logger.error(f"Failed to update image: {e}")
-
-    def track_playback_started(self, tl_track):
-        (tlid, track) = tl_track
-        self.update_track(track)
-
-    def update_track(self, track, time_position=None):
-        if track is None:
-            track = self.core.playback.get_current_track().get()
-
-        art = None
-        track_images = self.core.library.get_images([track.uri]).get()
-        if track.uri in track_images:
-            track_images = track_images[track.uri]
-            if len(track_images) == 1:
-                art = track_images[0].uri
+    def tracklist_changed(self):
+        """Called by Mopidy when the tracklist changes."""
+        # ignore for now: experiment
+        return
+        logger.debug(f"MusicWallFrontend: tracklick_changed detected - current_album: {self.current_album}")
+        logger.debug(f"MusicWallFrontend: tracklist_length: {self.core.tracklist.get_length().get()}")
+        # current album has been stopped
+        if self.current_album and self.core.tracklist.get_length().get() == 0:
+            logger.debug("MusicWallFrontend: tracklist is empty!")
+            peripheral_mac = self.mac_album_dict[self.current_album]
+            self.current_album = None
+            if peripheral_mac:
+                success = self.send_to_esp(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+                cmd = OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"]
+                if success:
+                    logger.debug(f"MusicWallFrontend: send to esp succeeded with params mac {peripheral_mac} command {cmd}")
+                    self.state = "ack_expected"
+                else:
+                    logger.warning(f"MusicWallFrontend: send to esp failed for mac {peripheral_mac} command {cmd}")
             else:
-                for image in track_images:
-                    if image.width is None or image.height is None:
-                        continue
-                    if image.height >= 240 and image.width >= 240:
-                        art = image.uri
+                logger.debug(f"MusicWallFrontend ERROR: album ({current_album}) is not associated with any known peripheral mac addresses")
+                logger.debug(json.dumps(self.mac_album_dict, indent=2))
 
-        self.update_album_art(art)
+        
+        # new album added
+        elif not self.current_album and self.core.tracklist.get_length().get() > 0:
+            logger.debug("MusicWallFrontend: tracklist contains songs!")
+            current_album = self.get_current_album()
+            peripheral_mac = self.mac_album_dict[current_album]
+            if peripheral_mac:
+                self.current_album = current_album
+                self.core.playback.play().get()
+                self.send_to_esp(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
+                cmd = OUTGOING_SERIAL_COMMANDS["LIGHT_ON"]
+            else:
+                logger.debug(f"MusicWallFrontend ERROR: album ({current_album}) is not associated with any known peripheral mac addresses")
+                logger.debug(json.dumps(self.mac_album_dict, indent=2))
+        else:
+            logger.debug(f"MusicWallFrontend: something wrong! self.current_album: {self.current_album} - tracklist.get_length() {self.core.tracklist.get_length().get()}")
 
-    def update_album_art(self, art=None):
-        if art is not None:
-            if art.startswith("/local/") or art.startswith("/youtube/"):
-                art = f"http://{self.hostname}:{self.port}{art}"
+    def handle_ack(self, ack: str):
+        """
+        Handle acknowledgement messages from the ESP.
+        Expects '1' for success, anything else is considered a failure.
+        """
+        if ack == "1":
+            logger.debug(f"MusicWallFrontend: ACK received")
+            success = True
+        else:
+            logger.debug(f"MusicWallFrontend: ACK failed or unexpected response: '{ack}'")
+            success = False
 
-            if art.startswith("http://") or art.startswith("https://"):
-                response = requests.get(art, stream=True)
-                response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-                self.update_image(io.BytesIO(response.content))
+        # reset state
+        self.state = "listening"
 
-            # TODO: What if it isn't a url?  What if it's a file?
+        return {"ack": success}
 
-    def transformScaleKeepRatio(self, image, size):
-        iwidth, iheight = image.get_size()
-        scale = min(size[0] / iwidth, size[1] / iheight)
-        new_size = (round(iwidth * scale), round(iheight * scale))
-        scaled_image = pygame.transform.smoothscale(image, new_size)
-        image_rect = scaled_image.get_rect(center=self.screen.get_rect().center)
-        return scaled_image, image_rect
+    def get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
+        # Replace spaces with underscores to match your filesystem
+        folder_name = album_name.replace(" ", "_")
+        path = f"{media_dir}/{folder_name}/"
+        # Encode special characters (spaces, etc.) for a valid URI
+        return f"file://{quote(path)}"
+
+    def get_album_track_uris(self, album_uri: str):
+        refs = self.core.library.browse(album_uri).get()
+        track_uris = [ref.uri for ref in refs if ref.type == "track"]
+        return track_uris
+
+    def handle_command(self, cmd, new_message):
+        if cmd == REGISTER:
+            logger.debug(f"MusicWallFrontend: handle_command called with REGISTER: '{cmd}' '{new_message}'")
+            register_mac = self.mac_album_dict[new_message]
+            self.send_to_esp(register_mac, REGISTER_ACK)
+            return
+        elif cmd == DEBUG:
+            logger.debug(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {new_message}")
+            return
+        elif cmd == PLAY:
+            logger.debug(f"MusicWallFrontend - handling PLAY")
+            self.handle_play(new_message)
+        elif cmd == STOP:
+            logger.debug(f"MusicWallFrontend - handling STOP")
+            self.handle_stop()
+        else:
+            logger.debug(f"MusicWallFrontend - UNKNOWN COMMAND: {cmd}")
+
+
+    def handle_stop(self):
+        playing = self.core.playback.get_state().get() == "playing"
+        logger.debug(f"MusicWallFrontend - handling stop - playing? {playing}")
+        if playing:
+            self.core.playback.stop().get()
+            self.core.tracklist.clear().get()
+
+    def handle_play(self, new_album):
+        current_album = self.get_current_album()
+        logger.debug(f"MusicWallFrontend - handle_play - current_album: {current_album} - new_album: {new_album}")
+        if new_album == current_album:
+            return
+        
+        self.handle_stop()
+        logger.debug("MusicWallFrontend: playing new_album")
+        album_uri = self.get_album_uri(new_album)
+        track_uris = self.get_album_track_uris(album_uri)
+        logger.debug(f"MusicWallFrontend: playing track_uris {track_uris}")
+        self.core.tracklist.add(uris=track_uris).get()
+        self.core.playback.play().get()
+
+
+    def send_to_esp(self, mac_address, command):
+        mac = [int(b, 16) for b in mac_address.split(":")]
+        payload = {
+            "mac": mac,
+            "command": command
+        }
+        json_str = json.dumps(payload)
+
+        # Send over serial
+        self.outgoing_handler_proxy.send_message(json_str)
+
+    def get_current_album(self):
+        logger.debug(f"MusicWallFrontend - getting current album")
+        numTracks = self.core.tracklist.get_length().get()
+        if numTracks == 0:
+            logger.debug(f"MusicWallFrontend - get_current_album = nothing in tracklist")
+            return None
+
+        tltrack = self.core.tracklist.slice(0,1).get()[0]
+        track = tltrack.track
+        if track and track.uri:
+            path = track.uri.replace("file://", "")
+            folder = os.path.basename(os.path.dirname(path))
+            logger.debug(f"MusicWallFrontend returning album name: '{folder}' from uri: {track.uri} - path: {path}")
+            return tltrack.track.album.name
+
+        logger.debug(f"MusicWallFrontend - missing track or track.uri - tltrack: {tltrack}")
+        return None
+
+    def transform_serial(self, data):
+        line = data.decode('utf-8').rstrip().strip()
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            logger.debug(f"MusicWallFrontend: JSON DECODE ERROR FOR OBJ: '{line}' - len({len(line)})")
+            return None
+
+        valid = (
+            isinstance(data, dict)
+            and "mac" in data
+            and "command" in data
+            and "message" in data
+            and isinstance(data["mac"], list)
+            and len(data["mac"]) == 6
+            and all(isinstance(b, int) and 0 <= b <= 255 for b in data["mac"])
+            and isinstance(data["command"], int)
+            and data["command"] in VALID_INCOMING_COMMANDS
+            and isinstance(data["message"], str)
+        )
+
+        if valid:
+            logger.debug(f"MusicWallFrontend validated json: '{json.dumps(data)}'")
+            mac = ":".join(f'{b:02X}' for b in data["mac"])
+            message = data["message"]
+            cmd = data["command"]
+            if cmd != DEBUG:
+                self.mac_album_dict[mac] = message
+                self.mac_album_dict[message] = mac
+            logger.debug(f"MusicWallFrontend: calling handle_command with {cmd}, {message}")
+            self.handle_command(cmd, message)
+        else:
+            logger.debug(f"MusicWallFrontend: JSON INVALID: '{line}' - len({len(line)})")
+            if data in ["0", "1"]:
+                self.handle_ack(data)
