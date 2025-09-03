@@ -53,7 +53,7 @@ class OutgoingSerialHandler(pykka.ThreadingActor):
         self.serial_port = serial_port
         self.lock = threading.Lock()
         logger.debug("OutgoingSerialHandler initialized")
-        logger.debug(f"OutgoingSerialHandler serial_port is open? {self.serial_port.is_open}")
+        # logger.debug(f"OutgoingSerialHandler serial_port is open? {self.serial_port.is_open}")
 
 
     def send_message(self, message: str):
@@ -66,14 +66,13 @@ class OutgoingSerialHandler(pykka.ThreadingActor):
                 logger.debug(f"OutgoingSerialHandler encountered an error: {e}")
 
 
-
 class IncomingSerialHandler(pykka.ThreadingActor):
     def __init__(self, serial_port, frontend_proxy):
         super(IncomingSerialHandler, self).__init__()
         self.frontend_proxy = frontend_proxy
         self.serial_port = serial_port
         logger.debug("IncomingSerialHandler initialized")
-        logger.debug(f"IncomingSerialHandler serial_port is open? {self.serial_port.is_open}")
+        # logger.debug(f"IncomingSerialHandler serial_port is open? {self.serial_port.is_open}")
 
 
     def on_start(self):
@@ -86,7 +85,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
         while self.running:
             line = self.serial_port.readline()
             if line:
-                logger.debug(f"IncomingSerialHandler received: {line}")
+                # logger.debug(f"IncomingSerialHandler received: {line}")
                 self.frontend_proxy.transform_serial(line)
 
 
@@ -117,7 +116,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.serial = serial.Serial(self.ser_port, self.baudrate, timeout=1)
         self.incoming_handler = IncomingSerialHandler.start(self.serial, self.actor_ref.proxy())
         self.outgoing_handler_proxy = OutgoingSerialHandler.start(self.serial).proxy()
-        self.core.tracklistController.set_consume(True)
+        self.core.tracklist.set_consume(True)
 
 
     def on_stop(self):
@@ -153,10 +152,18 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
     def handle_command(self, cmd, new_message):
         try:
             # Build method name conventionally
-            method_name = f"cmd_{VALID_INCOMING_COMMANDS[cmd.lower()]}"
-            return getattr(self, method_name)(new_message)
-        except AttributeError:
-            logger.debug(f"MusicWallFrontend - UNKNOWN COMMAND: {cmd}")
+            method_name = f"handle_{VALID_INCOMING_COMMANDS[int(cmd)]}"
+            getattr(self, method_name)(new_message)
+        except Exception as e:
+            logger.warn(f"error: {e}")
+            logger.warn(f"MusicWallFrontend - UNKNOWN COMMAND: {cmd}")
+            logger.warn(f"MusicWallFrontend - method_name: '{method_name}' ")
+            logger.warn(f"valid commands: {VALID_INCOMING_COMMANDS.keys()}")
+            methods = [name for name in dir(self) if callable(getattr(self, name))]
+            logger.warn(f"valid attributes: {methods}")
+            valid_cmd = method_name in methods
+            logger.warn(f"{method_name} a valid command? {valid_cmd}")
+            logger.want(f"new_message: {new_message}")
 
 
     def handle_register(self, album):
@@ -183,7 +190,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def handle_play(self, new_album):
-        logger.debug(f"MusicWallFrontend - handle_play - current_album: {self.urrent_album} - new_album: {new_album}")
+        logger.debug(f"MusicWallFrontend - handle_play - current_album: {self.current_album} - new_album: {new_album}")
         if new_album == self.current_album:
             logger.debug("MusicWallFrontend - handle_play - new_album is already playing, ignoring play command")
             return
@@ -203,9 +210,11 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
         # 3. play the new album
         self.current_album = new_album
+        peripheral_mac_to_turn_on = self.mac_album_dict.get(self.current_album)
         logger.debug(f"MusicWallFrontend: playing track_uris {track_uris}")
         self.core.tracklist.add(uris=track_uris)
         self.core.playback.play()
+        self.send_to_esp(peripheral_mac_to_turn_on, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
 
 
     def handle_ack(self, ack: str):
@@ -290,14 +299,15 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         )
 
         if valid:
-            logger.debug(f"MusicWallFrontend validated json: '{json.dumps(data)}'")
+            # logger.debug(f"MusicWallFrontend validated json: '{json.dumps(data)}'")
             mac = ":".join(f'{b:02X}' for b in data["mac"])
             message = data["message"]
             cmd = data["command"]
+            
             if cmd != DEBUG:
                 self.mac_album_dict[mac] = message
                 self.mac_album_dict[message] = mac
-            logger.debug(f"MusicWallFrontend: calling handle_command with {cmd}, {message}")
+            
             self.handle_command(cmd, message)
         else:
             logger.debug(f"MusicWallFrontend: JSON INVALID: '{line}' - len({len(line)})")
