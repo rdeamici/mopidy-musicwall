@@ -20,7 +20,12 @@ STOP = 1
 REGISTER = 2
 DEBUG = 3
 
-VALID_INCOMING_COMMANDS = { PLAY, STOP, REGISTER, DEBUG }
+VALID_INCOMING_COMMANDS = {
+    PLAY: "play",
+    STOP: "stop",
+    REGISTER: "register",
+    DEBUG: "debug"
+}
 
 REGISTER_ACK = 0
 INFO = 1
@@ -102,51 +107,94 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.serial = serial.Serial(self.ser_port, self.baudrate, timeout=1)
         self.incoming_handler = IncomingSerialHandler.start(self.serial, self.actor_ref.proxy())
         self.outgoing_handler_proxy = OutgoingSerialHandler.start(self.serial).proxy()
+        self.core.tracklistController.set_consume(True)
 
     def on_stop(self):
         self.serial.close()
         self.incoming_handler.stop()
         self.outgoing_handler_proxy.actor_ref.stop()
-
-    def tracklist_changed(self):
-        """Called by Mopidy when the tracklist changes."""
-        # ignore for now: experiment
-        return
-        logger.debug(f"MusicWallFrontend: tracklick_changed detected - current_album: {self.current_album}")
-        logger.debug(f"MusicWallFrontend: tracklist_length: {self.core.tracklist.get_length().get()}")
-        # current album has been stopped
-        if self.current_album and self.core.tracklist.get_length().get() == 0:
-            logger.debug("MusicWallFrontend: tracklist is empty!")
-            peripheral_mac = self.mac_album_dict[self.current_album]
-            self.current_album = None
-            if peripheral_mac:
-                success = self.send_to_esp(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
-                cmd = OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"]
-                if success:
-                    logger.debug(f"MusicWallFrontend: send to esp succeeded with params mac {peripheral_mac} command {cmd}")
-                    self.state = "ack_expected"
-                else:
-                    logger.warning(f"MusicWallFrontend: send to esp failed for mac {peripheral_mac} command {cmd}")
-            else:
-                logger.debug(f"MusicWallFrontend ERROR: album ({current_album}) is not associated with any known peripheral mac addresses")
-                logger.debug(json.dumps(self.mac_album_dict, indent=2))
-
+    
+    def on_event(self, event, **kwargs):
+        logger.debug(f"MusicWallFrontend: on_event called with event: {event}, kwargs: {kwargs}")
         
-        # new album added
-        elif not self.current_album and self.core.tracklist.get_length().get() > 0:
-            logger.debug("MusicWallFrontend: tracklist contains songs!")
-            current_album = self.get_current_album()
-            peripheral_mac = self.mac_album_dict[current_album]
-            if peripheral_mac:
-                self.current_album = current_album
-                self.core.playback.play().get()
-                self.send_to_esp(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
-                cmd = OUTGOING_SERIAL_COMMANDS["LIGHT_ON"]
-            else:
-                logger.debug(f"MusicWallFrontend ERROR: album ({current_album}) is not associated with any known peripheral mac addresses")
-                logger.debug(json.dumps(self.mac_album_dict, indent=2))
+        if event == "track_playback_ended":
+            self.handle_track_playback_ended(kwargs.get("tl_track"))
+    
+    
+    def handle_track_playback_ended(self, tl_track):
+        if self.current_album is None:
+            logger.debug("MusicWallFrontend: track_playback_ended - current_album is None, stop should have already been handled manually")
+        
+        elif self.current_album != tl_track.track.album:
+            logger.debug(f"MusicWallFrontend: track_playback_ended - old album `{tl_track.track.album}` ended, current album `{self.current_album}` should be playing")
+
+        elif self.core.tracklist.get_length().get() == 0:
+            logger.debug("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
+            self.core.playback.stop()
+            self.current_album = None
+            peripheral_mac = self.mac_album_dict.get(self.current_album)
+            self.send_to_esp(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
         else:
-            logger.debug(f"MusicWallFrontend: something wrong! self.current_album: {self.current_album} - tracklist.get_length() {self.core.tracklist.get_length().get()}")
+            logger.debug(f"MusicWallFrontend: track_playback_ended - tracklist not empty, another track from `{self.current_album}` should be playing")
+
+
+    def handle_command(self, cmd, new_message):
+        try:
+            # Build method name conventionally
+            method_name = f"cmd_{VALID_INCOMING_COMMANDS[cmd.lower()]}"
+            return getattr(self, method_name)(new_message)
+        except AttributeError:
+            logger.debug(f"MusicWallFrontend - UNKNOWN COMMAND: {cmd}")
+
+
+    def handle_register(self, album):
+        logger.debug(f"MusicWallFrontend: handle_command called with REGISTER: '{album}'")
+        register_mac = self.mac_album_dict[album]
+        self.send_to_esp(register_mac, REGISTER_ACK)
+
+
+    def handle_debug(self, debug_message):
+        logger.debug(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {debug_message}")
+
+
+    def handle_stop(self, album):
+        if self.current_album != album:
+            logger.debug(f"MusicWallFrontend - handle_stop - album currently playing '{cur_album}' does not match stop command album '{album}'")
+            return
+
+        peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
+        self.current_album = None
+        self.state = "stopped"
+        self.core.playback.stop()
+        self.core.tracklist.clear()
+        self.send_to_esp(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+
+
+    def handle_play(self, new_album):
+        logger.debug(f"MusicWallFrontend - handle_play - current_album: {self.urrent_album} - new_album: {new_album}")
+        if new_album == self.current_album:
+            logger.debug("MusicWallFrontend - handle_play - new_album is already playing, ignoring play command")
+            return
+        
+        # 1. get tracks to add to tracklist
+        album_uri = self.get_album_uri(new_album)
+        track_uris = self.get_album_track_uris(album_uri)
+        # need to do this before clearing tracklist
+        # which will trigger tracklist_changed event
+        
+        # 2. stop the current album if one is playing
+        if self.current_album:
+            self.core.playback.stop()
+            self.core.tracklist.clear()
+            peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
+            self.send_to_esp(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+
+        # 3. play the new album
+        self.current_album = new_album
+        logger.debug(f"MusicWallFrontend: playing track_uris {track_uris}")
+        self.core.tracklist.add(uris=track_uris)
+        self.core.playback.play()
+
 
     def handle_ack(self, ack: str):
         """
@@ -177,46 +225,6 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         track_uris = [ref.uri for ref in refs if ref.type == "track"]
         return track_uris
 
-    def handle_command(self, cmd, new_message):
-        if cmd == REGISTER:
-            logger.debug(f"MusicWallFrontend: handle_command called with REGISTER: '{cmd}' '{new_message}'")
-            register_mac = self.mac_album_dict[new_message]
-            self.send_to_esp(register_mac, REGISTER_ACK)
-            return
-        elif cmd == DEBUG:
-            logger.debug(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {new_message}")
-            return
-        elif cmd == PLAY:
-            logger.debug(f"MusicWallFrontend - handling PLAY")
-            self.handle_play(new_message)
-        elif cmd == STOP:
-            logger.debug(f"MusicWallFrontend - handling STOP")
-            self.handle_stop()
-        else:
-            logger.debug(f"MusicWallFrontend - UNKNOWN COMMAND: {cmd}")
-
-
-    def handle_stop(self):
-        playing = self.core.playback.get_state().get() == "playing"
-        logger.debug(f"MusicWallFrontend - handling stop - playing? {playing}")
-        if playing:
-            self.core.playback.stop().get()
-            self.core.tracklist.clear().get()
-
-    def handle_play(self, new_album):
-        current_album = self.get_current_album()
-        logger.debug(f"MusicWallFrontend - handle_play - current_album: {current_album} - new_album: {new_album}")
-        if new_album == current_album:
-            return
-        
-        self.handle_stop()
-        logger.debug("MusicWallFrontend: playing new_album")
-        album_uri = self.get_album_uri(new_album)
-        track_uris = self.get_album_track_uris(album_uri)
-        logger.debug(f"MusicWallFrontend: playing track_uris {track_uris}")
-        self.core.tracklist.add(uris=track_uris).get()
-        self.core.playback.play().get()
-
 
     def send_to_esp(self, mac_address, command):
         mac = [int(b, 16) for b in mac_address.split(":")]
@@ -231,20 +239,18 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def get_current_album(self):
         logger.debug(f"MusicWallFrontend - getting current album")
-        numTracks = self.core.tracklist.get_length().get()
-        if numTracks == 0:
+        track = self.core.playback.get_current_track().get()
+        if track is None:
             logger.debug(f"MusicWallFrontend - get_current_album = nothing in tracklist")
             return None
-
-        tltrack = self.core.tracklist.slice(0,1).get()[0]
-        track = tltrack.track
-        if track and track.uri:
+        
+        if track.uri:
             path = track.uri.replace("file://", "")
             folder = os.path.basename(os.path.dirname(path))
             logger.debug(f"MusicWallFrontend returning album name: '{folder}' from uri: {track.uri} - path: {path}")
-            return tltrack.track.album.name
+            return folder
 
-        logger.debug(f"MusicWallFrontend - missing track or track.uri - tltrack: {tltrack}")
+        logger.debug(f"MusicWallFrontend - missing track or track.uri - track: {track}")
         return None
 
     def transform_serial(self, data):
