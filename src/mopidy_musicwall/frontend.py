@@ -37,7 +37,6 @@ NEW_CENTRAL = 6
 
 VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO, LIGHT_ON, LIGHT_OFF, POWER_ON, POWER_OFF, NEW_CENTRAL }
 
-
 OUTGOING_SERIAL_COMMANDS = {
     "INFO": 1,
     "LIGHT_ON": 2,
@@ -45,6 +44,8 @@ OUTGOING_SERIAL_COMMANDS = {
     "POWER_ON": 4,
     "POWER_OFF": 5,
 }
+
+
 
 class OutgoingSerialHandler(pykka.ThreadingActor):
     def __init__(self, serial_port):
@@ -54,6 +55,7 @@ class OutgoingSerialHandler(pykka.ThreadingActor):
         logger.debug("OutgoingSerialHandler initialized")
         logger.debug(f"OutgoingSerialHandler serial_port is open? {self.serial_port.is_open}")
 
+
     def send_message(self, message: str):
         with self.lock:
             logger.debug(f"OutgoingSerialHandler sending message: {message}")
@@ -62,6 +64,9 @@ class OutgoingSerialHandler(pykka.ThreadingActor):
                 logger.debug(f"OutgoingSerialHandler sent {numBytes} bytes")
             except Exception as e:
                 logger.debug(f"OutgoingSerialHandler encountered an error: {e}")
+
+
+
 class IncomingSerialHandler(pykka.ThreadingActor):
     def __init__(self, serial_port, frontend_proxy):
         super(IncomingSerialHandler, self).__init__()
@@ -70,18 +75,21 @@ class IncomingSerialHandler(pykka.ThreadingActor):
         logger.debug("IncomingSerialHandler initialized")
         logger.debug(f"IncomingSerialHandler serial_port is open? {self.serial_port.is_open}")
 
+
     def on_start(self):
         self.running = True
         self.thread = threading.Thread(target=self.read_loop, daemon=True)
         self.thread.start()    
-    
+
+
     def read_loop(self):
         while self.running:
             line = self.serial_port.readline()
             if line:
                 logger.debug(f"IncomingSerialHandler received: {line}")
                 self.frontend_proxy.transform_serial(line)
-            
+
+
     def on_stop(self):
         self.running = False
         if self.thread.is_alive():
@@ -95,6 +103,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.core = core
         self.config = config["musicwall"]
 
+
         # relies on mopidy-http to be configured and running
         self.ser_port = self.config.get("port")
         self.baudrate = self.config.get("baudrate")
@@ -103,24 +112,27 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.state = "listening"
         logger.debug(f"MusicWallFrontend initialized on serial port {self.ser_port} with baudrate {self.baudrate}")
 
+
     def on_start(self):
         self.serial = serial.Serial(self.ser_port, self.baudrate, timeout=1)
         self.incoming_handler = IncomingSerialHandler.start(self.serial, self.actor_ref.proxy())
         self.outgoing_handler_proxy = OutgoingSerialHandler.start(self.serial).proxy()
         self.core.tracklistController.set_consume(True)
 
+
     def on_stop(self):
         self.serial.close()
         self.incoming_handler.stop()
         self.outgoing_handler_proxy.actor_ref.stop()
-    
+
+
     def on_event(self, event, **kwargs):
         logger.debug(f"MusicWallFrontend: on_event called with event: {event}, kwargs: {kwargs}")
         
         if event == "track_playback_ended":
-            self.handle_track_playback_ended(kwargs.get("tl_track"))
+            self.handle_track_playback_ended(kwargs.get("tl_track"))    
     
-    
+
     def handle_track_playback_ended(self, tl_track):
         if self.current_album is None:
             logger.debug("MusicWallFrontend: track_playback_ended - current_album is None, stop should have already been handled manually")
@@ -213,11 +225,13 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
         return {"ack": success}
 
+
     def get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
         # Replace spaces with underscores to match your filesystem
         path = f"{media_dir}/{album_name}/"
         # Encode special characters (spaces, etc.) for a valid URI
         return f"file://{quote(path)}"
+
 
     def get_album_track_uris(self, album_uri: str):
         refs = self.core.library.browse(album_uri).get()
@@ -236,6 +250,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         # Send over serial
         self.outgoing_handler_proxy.send_message(json_str)
 
+
     def get_current_album(self):
         logger.debug(f"MusicWallFrontend - getting current album")
         track = self.core.playback.get_current_track().get()
@@ -251,6 +266,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
         logger.debug(f"MusicWallFrontend - missing track or track.uri - track: {track}")
         return None
+
 
     def transform_serial(self, data):
         line = data.decode('utf-8').rstrip().strip()
