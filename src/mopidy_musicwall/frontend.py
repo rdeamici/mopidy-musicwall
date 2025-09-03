@@ -215,8 +215,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
         # Replace spaces with underscores to match your filesystem
-        folder_name = album_name.replace(" ", "_")
-        path = f"{media_dir}/{folder_name}/"
+        path = f"{media_dir}/{album_name}/"
         # Encode special characters (spaces, etc.) for a valid URI
         return f"file://{quote(path)}"
 
