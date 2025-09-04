@@ -108,7 +108,6 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.baudrate = self.config.get("baudrate")
         self.mac_album_dict = {}
         self.current_album = None
-        self.state = "listening"
         logger.debug(f"MusicWallFrontend initialized on serial port {self.ser_port} with baudrate {self.baudrate}")
 
 
@@ -133,6 +132,8 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
     
 
     def handle_track_playback_ended(self, tl_track):
+        '''Only used to handle the case where an album finishes naturally'''
+
         if self.current_album is None:
             logger.debug("MusicWallFrontend: track_playback_ended - current_album is None, stop should have already been handled manually")
         
@@ -140,36 +141,32 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             logger.debug(f"MusicWallFrontend: track_playback_ended - old album `{tl_track.track.album}` ended, current album `{self.current_album}` should be playing")
 
         elif self.core.tracklist.get_length().get() == 0:
-            logger.debug("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
-            self.core.playback.stop()
-            self.current_album = None
-            peripheral_mac = self.mac_album_dict.get(self.current_album)
-            self.send_to_esp(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+            self._handle_current_album_finished()
         else:
             logger.debug(f"MusicWallFrontend: track_playback_ended - tracklist not empty, another track from `{self.current_album}` should be playing")
 
 
-    def handle_command(self, cmd, new_message):
+    def _handle_current_album_finished(self):
+        logger.debug("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
+        self.core.playback.stop()
+        peripheral_mac = self.mac_album_dict[self.current_album]
+        self.send_cmd_to_peripheral(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        self.current_album = None
+
+
+    def handle_command(self, cmd, message):
         try:
             # Build method name conventionally
             method_name = f"handle_{VALID_INCOMING_COMMANDS[int(cmd)]}"
-            getattr(self, method_name)(new_message)
+            getattr(self, method_name)(message)
         except Exception as e:
-            logger.warn(f"error: {e}")
-            logger.warn(f"MusicWallFrontend - UNKNOWN COMMAND: {cmd}")
-            logger.warn(f"MusicWallFrontend - method_name: '{method_name}' ")
-            logger.warn(f"valid commands: {VALID_INCOMING_COMMANDS.keys()}")
-            methods = [name for name in dir(self) if callable(getattr(self, name))]
-            logger.warn(f"valid attributes: {methods}")
-            valid_cmd = method_name in methods
-            logger.warn(f"{method_name} a valid command? {valid_cmd}")
-            logger.want(f"new_message: {new_message}")
+            logger.warn(f"MusicWallFrontend handle_command error: {e}")
 
 
     def handle_register(self, album):
         logger.debug(f"MusicWallFrontend: handle_command called with REGISTER: '{album}'")
         register_mac = self.mac_album_dict[album]
-        self.send_to_esp(register_mac, REGISTER_ACK)
+        self.send_cmd_to_peripheral(register_mac, REGISTER_ACK)
 
 
     def handle_debug(self, debug_message):
@@ -178,15 +175,14 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def handle_stop(self, album):
         if self.current_album != album:
-            logger.debug(f"MusicWallFrontend - handle_stop - album currently playing '{cur_album}' does not match stop command album '{album}'")
+            logger.debug(f"MusicWallFrontend - ERROR - tried to stop album '{album}' but which is not playing: album '{self.current_album}' is - ignoring stop command")
             return
 
         peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
         self.current_album = None
-        self.state = "stopped"
         self.core.playback.stop()
         self.core.tracklist.clear()
-        self.send_to_esp(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        self.send_cmd_to_peripheral(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
 
 
     def handle_play(self, new_album):
@@ -198,41 +194,21 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         # 1. get tracks to add to tracklist
         album_uri = self.get_album_uri(new_album)
         track_uris = self.get_album_track_uris(album_uri)
-        # need to do this before clearing tracklist
-        # which will trigger tracklist_changed event
         
         # 2. stop the current album if one is playing
         if self.current_album:
             self.core.playback.stop()
             self.core.tracklist.clear()
-            peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
-            self.send_to_esp(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+            peripheral_to_turn_off = self.mac_album_dict[self.current_album]
+            self.send_cmd_to_peripheral(peripheral_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
 
         # 3. play the new album
         self.current_album = new_album
-        peripheral_mac_to_turn_on = self.mac_album_dict.get(self.current_album)
+        peripheral_to_turn_on = self.mac_album_dict[self.current_album]
         logger.debug(f"MusicWallFrontend: playing track_uris {track_uris}")
         self.core.tracklist.add(uris=track_uris)
         self.core.playback.play()
-        self.send_to_esp(peripheral_mac_to_turn_on, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
-
-
-    def handle_ack(self, ack: str):
-        """
-        Handle acknowledgement messages from the ESP.
-        Expects '1' for success, anything else is considered a failure.
-        """
-        if ack == "1":
-            logger.debug(f"MusicWallFrontend: ACK received")
-            success = True
-        else:
-            logger.debug(f"MusicWallFrontend: ACK failed or unexpected response: '{ack}'")
-            success = False
-
-        # reset state
-        self.state = "listening"
-
-        return {"ack": success}
+        self.send_cmd_to_peripheral(peripheral_to_turn_on, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
 
 
     def get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
@@ -248,15 +224,13 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         return track_uris
 
 
-    def send_to_esp(self, mac_address, command):
+    def send_cmd_to_peripheral(self, mac_address, command):
         mac = [int(b, 16) for b in mac_address.split(":")]
         payload = {
             "mac": mac,
             "command": command
         }
         json_str = json.dumps(payload)
-
-        # Send over serial
         self.outgoing_handler_proxy.send_message(json_str)
 
 
@@ -311,5 +285,3 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             self.handle_command(cmd, message)
         else:
             logger.debug(f"MusicWallFrontend: JSON INVALID: '{line}' - len({len(line)})")
-            if data in ["0", "1"]:
-                self.handle_ack(data)
