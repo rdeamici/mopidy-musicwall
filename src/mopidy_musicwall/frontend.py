@@ -167,6 +167,10 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         logger.debug(f"MusicWallFrontend: handle_command called with REGISTER: '{album}'")
         register_mac = self.mac_album_dict[album]
         self.send_cmd_to_peripheral(register_mac, REGISTER_ACK)
+        # a peripheral might go offline and then come back while
+        # the record associated with it is already playing
+        if self.current_album == album:
+            self.send_cmd_to_peripheral(register_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
 
 
     def handle_debug(self, debug_message):
