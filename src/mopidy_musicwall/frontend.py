@@ -54,18 +54,17 @@ class OutgoingSerialHandler(pykka.ThreadingActor):
         super(OutgoingSerialHandler, self).__init__()
         self.serial_port = serial_port
         self.lock = threading.Lock()
-        logger.debug("OutgoingSerialHandler initialized")
-        # logger.debug(f"OutgoingSerialHandler serial_port is open? {self.serial_port.is_open}")
+        logger.info("OutgoingSerialHandler initialized")
+        # logger.info(f"OutgoingSerialHandler serial_port is open? {self.serial_port.is_open}")
 
 
     def send_message(self, message: str):
         with self.lock:
-            logger.debug(f"OutgoingSerialHandler sending message: {message}")
+            logger.info(f"OutgoingSerialHandler sending message: {message}")
             try:
                 numBytes = self.serial_port.write((message + '\n').encode('utf-8'))   # newline is important
-                logger.debug(f"OutgoingSerialHandler sent {numBytes} bytes")
             except Exception as e:
-                logger.debug(f"OutgoingSerialHandler encountered an error: {e}")
+                logger.info(f"OutgoingSerialHandler encountered an error: {e}")
 
 
 class IncomingSerialHandler(pykka.ThreadingActor):
@@ -73,8 +72,8 @@ class IncomingSerialHandler(pykka.ThreadingActor):
         super(IncomingSerialHandler, self).__init__()
         self.frontend_proxy = frontend_proxy
         self.serial_port = serial_port
-        logger.debug("IncomingSerialHandler initialized")
-        # logger.debug(f"IncomingSerialHandler serial_port is open? {self.serial_port.is_open}")
+        logger.info("IncomingSerialHandler initialized")
+        # logger.info(f"IncomingSerialHandler serial_port is open? {self.serial_port.is_open}")
 
 
     def on_start(self):
@@ -87,7 +86,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
         while self.running:
             line = self.serial_port.readline()
             if line:
-                # logger.debug(f"IncomingSerialHandler received: {line}")
+                # logger.info(f"IncomingSerialHandler received: {line}")
                 self.frontend_proxy.transform_serial(line)
 
 
@@ -110,7 +109,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.baudrate = self.config.get("baudrate")
         self.mac_album_dict = {}
         self.current_album = None
-        logger.debug(f"MusicWallFrontend initialized on serial port {self.ser_port} with baudrate {self.baudrate}")
+        logger.info(f"MusicWallFrontend initialized on serial port {self.ser_port} with baudrate {self.baudrate}")
 
 
     def on_start(self):
@@ -131,7 +130,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def on_event(self, event, **kwargs):
-        logger.debug(f"MusicWallFrontend: on_event called with event: {event}, kwargs: {kwargs}")
+        # logger.info(f"MusicWallFrontend: on_event called with event: {event}, kwargs: {kwargs}")
         
         if event == "track_playback_ended":
             self.handle_track_playback_ended(kwargs.get("tl_track"))    
@@ -141,19 +140,19 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         '''Only used to handle the case where an album finishes naturally'''
 
         if self.current_album is None:
-            logger.debug("MusicWallFrontend: track_playback_ended - current_album is None, stop should have already been handled manually")
+            logger.info("MusicWallFrontend: track_playback_ended - current_album is None, stop should have already been handled manually")
         
         elif self.current_album != tl_track.track.album:
-            logger.debug(f"MusicWallFrontend: track_playback_ended - old album `{tl_track.track.album}` ended, current album `{self.current_album}` should be playing")
+            logger.info(f"MusicWallFrontend: track_playback_ended - old album `{tl_track.track.album}` ended, current album `{self.current_album}` should be playing")
 
         elif self.core.tracklist.get_length().get() == 0:
             self._handle_current_album_finished()
         else:
-            logger.debug(f"MusicWallFrontend: track_playback_ended - tracklist not empty, another track from `{self.current_album}` should be playing")
+            logger.info(f"MusicWallFrontend: track_playback_ended - tracklist not empty, another track from `{self.current_album}` should be playing")
 
 
     def _handle_current_album_finished(self):
-        logger.debug("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
+        logger.info("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
         self.core.playback.stop()
         peripheral_mac = self.mac_album_dict[self.current_album]
         self.send_cmd_to_peripheral(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
@@ -170,7 +169,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def handle_register(self, album):
-        logger.debug(f"MusicWallFrontend: handle_command called with REGISTER: '{album}'")
+        logger.info(f"MusicWallFrontend: handle_command called with REGISTER: '{album}'")
         register_mac = self.mac_album_dict[album]
         self.send_cmd_to_peripheral(register_mac, REGISTER_ACK)
         # a peripheral might go offline and then come back while
@@ -180,14 +179,15 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def handle_debug(self, debug_message):
-        logger.debug(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {debug_message}")
+        logger.warn(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {debug_message}")
 
 
     def handle_stop(self, album):
         if self.current_album != album:
-            logger.debug(f"MusicWallFrontend - ERROR - tried to stop album '{album}' but which is not playing: album '{self.current_album}' is - ignoring stop command")
+            logger.info(f"MusicWallFrontend - ERROR - tried to stop album '{album}' but which is not playing: album '{self.current_album}' is - ignoring stop command")
             return
 
+        logger.info(f"MusicWallFrontend - stop requested for album: {album}")
         peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
         self.current_album = None
         self.core.playback.stop()
@@ -196,9 +196,9 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def handle_play(self, new_album):
-        logger.debug(f"MusicWallFrontend - handle_play - current_album: {self.current_album} - new_album: {new_album}")
+        logger.info(f"MusicWallFrontend - handle_play - current_album: {self.current_album} - new_album: {new_album}")
         if new_album == self.current_album:
-            logger.debug("MusicWallFrontend - handle_play - new_album is already playing, ignoring play command")
+            logger.info("MusicWallFrontend - handle_play - new_album is already playing, ignoring play command")
             return
         
         # 1. get tracks to add to tracklist
@@ -207,6 +207,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         
         # 2. stop the current album if one is playing
         if self.current_album:
+            logger.info(f"stopping current album: {self.current_album}")
             self.core.playback.stop()
             self.core.tracklist.clear()
             peripheral_to_turn_off = self.mac_album_dict[self.current_album]
@@ -215,8 +216,9 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         # 3. play the new album
         self.current_album = new_album
         peripheral_to_turn_on = self.mac_album_dict[self.current_album]
-        logger.debug(f"MusicWallFrontend: playing track_uris {track_uris}")
+        # logger.info(f"MusicWallFrontend: playing track_uris {track_uris}")
         self.core.tracklist.add(uris=track_uris)
+        logger.info(f"playing new album: {self.current_album}")
         self.core.playback.play()
         self.send_cmd_to_peripheral(peripheral_to_turn_on, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
 
@@ -245,19 +247,17 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def get_current_album(self):
-        logger.debug(f"MusicWallFrontend - getting current album")
         track = self.core.playback.get_current_track().get()
         if track is None:
-            logger.debug(f"MusicWallFrontend - get_current_album = nothing in tracklist")
+            logger.info(f"MusicWallFrontend - get_current_album = nothing in tracklist")
             return None
         
         if track.uri:
             path = track.uri.replace("file://", "")
             folder = os.path.basename(os.path.dirname(path))
-            logger.debug(f"MusicWallFrontend returning album name: '{folder}' from uri: {track.uri} - path: {path}")
             return folder
 
-        logger.debug(f"MusicWallFrontend - missing track or track.uri - track: {track}")
+        logger.info(f"MusicWallFrontend - missing track or track.uri - track: {track}")
         return None
 
 
@@ -266,7 +266,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         try:
             data = json.loads(line)
         except json.JSONDecodeError:
-            logger.debug(f"MusicWallFrontend: JSON DECODE ERROR FOR OBJ: '{line}' - len({len(line)})")
+            logger.info(f"MusicWallFrontend: JSON DECODE ERROR FOR OBJ: '{line}' - len({len(line)})")
             return None
 
         valid = (
@@ -283,15 +283,16 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         )
 
         if valid:
-            # logger.debug(f"MusicWallFrontend validated json: '{json.dumps(data)}'")
+            # logger.info(f"MusicWallFrontend validated json: '{json.dumps(data)}'")
             mac = ":".join(f'{b:02X}' for b in data["mac"])
             message = data["message"]
             cmd = data["command"]
             
+            # debug messages come from central - no need to register central
             if cmd != DEBUG:
                 self.mac_album_dict[mac] = message
                 self.mac_album_dict[message] = mac
             
             self.handle_command(cmd, message)
         else:
-            logger.debug(f"MusicWallFrontend: JSON INVALID: '{line}' - len({len(line)})")
+            logger.warn(f"MusicWallFrontend: JSON INVALID: '{line}' - len({len(line)})")
