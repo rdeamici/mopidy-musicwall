@@ -38,13 +38,15 @@ NEW_CENTRAL = 6
 VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO, LIGHT_ON, LIGHT_OFF, POWER_ON, POWER_OFF, NEW_CENTRAL }
 
 OUTGOING_SERIAL_COMMANDS = {
-    "INFO": 1,
-    "LIGHT_ON": 2,
-    "LIGHT_OFF": 3,
-    "POWER_ON": 4,
-    "POWER_OFF": 5,
+    "INFO": INFO,
+    "LIGHT_ON": LIGHT_ON,
+    "LIGHT_OFF": LIGHT_OFF,
+    "POWER_ON": POWER_ON,
+    "POWER_OFF": POWER_OFF,
+    "NEW_CENTRAL": NEW_CENTRAL
 }
 
+BROADCAST_ADDRESS = "0xFF:0xFF:0xFF:0xFF:0xFF:0xFF"
 
 
 class OutgoingSerialHandler(pykka.ThreadingActor):
@@ -116,6 +118,10 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.incoming_handler = IncomingSerialHandler.start(self.serial, self.actor_ref.proxy())
         self.outgoing_handler_proxy = OutgoingSerialHandler.start(self.serial).proxy()
         self.core.tracklist.set_consume(True)
+
+        # send out a new central command to any peripherals that may be on while central restarted
+        # will cause the peripherals to reset themselves
+        self.send_cmd_to_peripheral(BROADCAST_ADDRESS, OUTGOING_SERIAL_COMMANDS["NEW_CENTRAL"])
 
 
     def on_stop(self):
