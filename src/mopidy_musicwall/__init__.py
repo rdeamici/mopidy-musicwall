@@ -32,16 +32,15 @@ class Extension(ext.Extension):
         from .frontend import MusicWallFrontend
         registry.add("frontend", MusicWallFrontend)
 
-        # registry.add(
-        #     "http:app", {"name": self.ext_name, "factory": musicwall_factory},
-        # )
+        registry.add(
+            "http:app", {"name": self.ext_name, "factory": musicwall_factory},
+        )
 
-# def musicwall_factory(config, core):
-#     from tornado.web import StaticFileHandler
-#     from .handlers import HttpHandler
+def musicwall_factory(config, core):
+    from .handlers import HttpHandler
 
-#     path = pathlib.Path(__file__).parent / "static"
+    path = pathlib.Path(__file__).parent / "static"
 
-#     return [
-#         ('/play', HttpHandler, {"core": core, "config": config})
-#     ]
+    return [
+        ('/play', HttpHandler, {"core": core, "config": config})
+    ]

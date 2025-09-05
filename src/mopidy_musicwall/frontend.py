@@ -29,11 +29,12 @@ VALID_INCOMING_COMMANDS = {
 
 REGISTER_ACK = 0
 INFO_REQUEST = 1
-LIGHT_ON = 2
-LIGHT_OFF = 3
-NEW_CENTRAL = 4
+TOGGLE = 2
+LIGHT_ON = 3
+LIGHT_OFF = 4
+NEW_CENTRAL = 5
 
-VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO_REQUEST, LIGHT_ON, LIGHT_OFF, NEW_CENTRAL }
+VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO_REQUEST, TOGGLE, LIGHT_ON, LIGHT_OFF, NEW_CENTRAL }
 
 OUTGOING_SERIAL_COMMANDS = {
     "REGISTER_ACK": REGISTER_ACK,
@@ -84,7 +85,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
             line = self.serial_port.readline()
             if line:
                 # logger.info(f"IncomingSerialHandler received: {line}")
-                self.frontend_proxy.transform_serial(line)
+                self.frontend_proxy.transform_serial(line).get()
 
 
     def on_stop(self):
@@ -115,9 +116,9 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.outgoing_handler_proxy = OutgoingSerialHandler.start(self.serial).proxy()
         self.core.tracklist.set_consume(True)
 
-        # send out a new central command to any peripherals that may be on while central restarted
-        # will cause the peripherals to reset themselves
+        # reset system on central restart
         self.send_cmd_to_peripheral(BROADCAST_ADDRESS, OUTGOING_SERIAL_COMMANDS["NEW_CENTRAL"])
+        self.send_cmd_to_peripheral(BROADCAST_ADDRESS, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
 
 
     def on_stop(self):
@@ -177,6 +178,20 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def handle_debug(self, debug_message):
         logger.warn(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {debug_message}")
+
+
+    def handle_toggle_http_request(self, peripheral_addres):
+        logger.info(f"MusicWallFrontend - received toggle request from http server for peripheral: {peripheral_addres}")
+        self.send_cmd_to_peripheral(peripheral_addres, OUTGOING_SERIAL_COMMANDS["TOGGLE"])
+
+
+    def handle_info_response(self, info_message):
+        '''
+        used to associate a peripheral mac address with an album.
+        mac address and album is stored in dictionary in the
+        transform serial step so nothing to do here.
+        '''
+        logger.info(f"MusicWallFrontend - received info response from peripheral: {info_message}")
 
 
     def handle_toggle(self, album):
