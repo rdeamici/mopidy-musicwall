@@ -15,34 +15,31 @@ from . import Extension
 
 logger = logging.getLogger(__name__)
 
-PLAY = 0
-STOP = 1
-REGISTER = 2
+REGISTER = 0
+INFO_RESPONSE = 1
+TOGGLE = 2
 DEBUG = 3
 
 VALID_INCOMING_COMMANDS = {
-    PLAY: "play",
-    STOP: "stop",
     REGISTER: "register",
+    INFO_RESPONSE: "info_response",
+    TOGGLE: "toggle",
     DEBUG: "debug"
 }
 
 REGISTER_ACK = 0
-INFO = 1
+INFO_REQUEST = 1
 LIGHT_ON = 2
 LIGHT_OFF = 3
-POWER_ON = 4
-POWER_OFF = 5
 NEW_CENTRAL = 6
 
-VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO, LIGHT_ON, LIGHT_OFF, POWER_ON, POWER_OFF, NEW_CENTRAL }
+VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO_REQUEST, LIGHT_ON, LIGHT_OFF, NEW_CENTRAL }
 
 OUTGOING_SERIAL_COMMANDS = {
-    "INFO": INFO,
+    "REGISTER_ACK": REGISTER_ACK,
+    "INFO_REQUEST": INFO_REQUEST,
     "LIGHT_ON": LIGHT_ON,
     "LIGHT_OFF": LIGHT_OFF,
-    "POWER_ON": POWER_ON,
-    "POWER_OFF": POWER_OFF,
     "NEW_CENTRAL": NEW_CENTRAL
 }
 
@@ -182,30 +179,22 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         logger.warn(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {debug_message}")
 
 
-    def handle_stop(self, album):
-        if self.current_album != album:
-            logger.info(f"MusicWallFrontend - ERROR - tried to stop album '{album}' but which is not playing: album '{self.current_album}' is - ignoring stop command")
-            return
-
-        logger.info(f"MusicWallFrontend - stop requested for album: {album}")
-        peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
-        self.current_album = None
-        self.core.playback.stop()
-        self.core.tracklist.clear()
-        self.send_cmd_to_peripheral(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
-
-
-    def handle_play(self, new_album):
-        logger.info(f"MusicWallFrontend - handle_play - current_album: {self.current_album} - new_album: {new_album}")
-        if new_album == self.current_album:
-            logger.info("MusicWallFrontend - handle_play - new_album is already playing, ignoring play command")
+    def handle_toggle(self, album):
+        '''Three states this handler handles:
+            1. An album is playing, and it's the requested album - stop it
+            2. An album is playing, and it's a different album - stop the current one and start the requested one
+            3. No album is playing, start the requested album
+        '''
+        logger.info(f"MusicWallFrontend - handle_toggle - current_album: {self.current_album} - new_album: {album}")
+        if album == self.current_album:
+            logger.info(f"MusicWallFrontend - stop requested for album: {album}")
+            peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
+            self.current_album = None
+            self.core.playback.stop()
+            self.core.tracklist.clear()
+            self.send_cmd_to_peripheral(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
             return
         
-        # 1. get tracks to add to tracklist
-        album_uri = self.get_album_uri(new_album)
-        track_uris = self.get_album_track_uris(album_uri)
-        
-        # 2. stop the current album if one is playing
         if self.current_album:
             logger.info(f"stopping current album: {self.current_album}")
             self.core.playback.stop()
@@ -213,14 +202,14 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             peripheral_to_turn_off = self.mac_album_dict[self.current_album]
             self.send_cmd_to_peripheral(peripheral_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
 
-        # 3. play the new album
-        self.current_album = new_album
+        self.current_album = album
+        album_uri = self.get_album_uri(album)
+        track_uris = self.get_album_track_uris(album_uri)
         peripheral_to_turn_on = self.mac_album_dict[self.current_album]
-        # logger.info(f"MusicWallFrontend: playing track_uris {track_uris}")
         self.core.tracklist.add(uris=track_uris)
-        logger.info(f"playing new album: {self.current_album}")
         self.core.playback.play()
         self.send_cmd_to_peripheral(peripheral_to_turn_on, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
+        logger.info(f"playing new album: {self.current_album}")
 
 
     def get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
