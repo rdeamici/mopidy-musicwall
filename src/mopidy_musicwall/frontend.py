@@ -31,7 +31,7 @@ REGISTER_ACK = 0
 INFO_REQUEST = 1
 LIGHT_ON = 2
 LIGHT_OFF = 3
-NEW_CENTRAL = 6
+NEW_CENTRAL = 4
 
 VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO_REQUEST, LIGHT_ON, LIGHT_OFF, NEW_CENTRAL }
 
@@ -207,7 +207,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         track_uris = self.get_album_track_uris(album_uri)
         peripheral_to_turn_on = self.mac_album_dict[self.current_album]
         self.core.tracklist.add(uris=track_uris)
-        self.core.playback.play()
+        self.core.playback.play().get()
         self.send_cmd_to_peripheral(peripheral_to_turn_on, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
         logger.info(f"playing new album: {self.current_album}")
 
