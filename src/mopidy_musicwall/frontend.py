@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import json
+from mopidy_musicwall.types import SerialData
 import pykka
 import requests
 import io
@@ -117,8 +118,8 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.core.tracklist.set_consume(True)
 
         # reset system on central restart
-        self.send_cmd_to_peripheral(BROADCAST_ADDRESS, OUTGOING_SERIAL_COMMANDS["NEW_CENTRAL"])
-        self.send_cmd_to_peripheral(BROADCAST_ADDRESS, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        self._send_cmd_to_peripheral(BROADCAST_ADDRESS, OUTGOING_SERIAL_COMMANDS["NEW_CENTRAL"])
+        self._send_cmd_to_peripheral(BROADCAST_ADDRESS, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
 
 
     def on_stop(self):
@@ -153,61 +154,61 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         logger.info("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
         self.core.playback.stop()
         peripheral_mac = self.mac_album_dict[self.current_album]
-        self.send_cmd_to_peripheral(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        self._send_cmd_to_peripheral(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
         self.current_album = None
 
 
-    def handle_command(self, cmd, message):
+    def _handle_command(self, data: SerialData):
         try:
             # Build method name conventionally
-            method_name = f"handle_{VALID_INCOMING_COMMANDS[int(cmd)]}"
-            getattr(self, method_name)(message)
+            method_name = f"handle_{VALID_INCOMING_COMMANDS[data.command]}"
+            getattr(self, method_name)(data)
         except Exception as e:
-            logger.warn(f"MusicWallFrontend handle_command error: {e}")
+            logger.warn(f"MusicWallFrontend _handle_command error: {e}")
 
 
-    def handle_register(self, album):
-        logger.info(f"MusicWallFrontend: handle_command called with REGISTER: '{album}'")
-        register_mac = self.mac_album_dict[album]
-        self.send_cmd_to_peripheral(register_mac, REGISTER_ACK)
+    def handle_register(self, data: SerialData):
+        logger.info(f"MusicWallFrontend: _handle_register called with: '{data.message}'")
+        self._send_cmd_to_peripheral(data.mac_bytes, REGISTER_ACK)
         # a peripheral might go offline and then come back while
         # the record associated with it is already playing
-        if self.current_album == album:
-            self.send_cmd_to_peripheral(register_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
+        # in this case when it re-registers we need to turn it back on
+        if self.current_album == data.message:
+            self._send_cmd_to_peripheral(data.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
 
 
-    def handle_debug(self, debug_message):
-        logger.warn(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {debug_message}")
+    def handle_debug(self, data: SerialData):
+        logger.warn(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {data.message}")
 
 
     def handle_toggle_http_request(self, peripheral_addres):
         logger.info(f"MusicWallFrontend - received toggle request from http server for peripheral: {peripheral_addres}")
-        self.send_cmd_to_peripheral(peripheral_addres, OUTGOING_SERIAL_COMMANDS["TOGGLE"])
+        self._send_cmd_to_peripheral(peripheral_addres, OUTGOING_SERIAL_COMMANDS["TOGGLE"])
 
 
-    def handle_info_response(self, info_message):
+    def handle_info_response(self, data: SerialData):
         '''
         used to associate a peripheral mac address with an album.
         mac address and album is stored in dictionary in the
         transform serial step so nothing to do here.
         '''
-        logger.info(f"MusicWallFrontend - received info response from peripheral: {info_message}")
+        logger.info(f"MusicWallFrontend - received info response from peripheral: {data.message}")
 
 
-    def handle_toggle(self, album):
+    def handle_toggle(self, data: SerialData):
         '''Three states this handler handles:
             1. An album is playing, and it's the requested album - stop it
             2. An album is playing, and it's a different album - stop the current one and start the requested one
             3. No album is playing, start the requested album
         '''
-        logger.info(f"MusicWallFrontend - handle_toggle - current_album: {self.current_album} - new_album: {album}")
-        if album == self.current_album:
-            logger.info(f"MusicWallFrontend - stop requested for album: {album}")
+        logger.info(f"MusicWallFrontend - handle_toggle - current_album: {self.current_album} - new_album: {data.message}")
+        if data.message == self.current_album:
+            logger.info(f"MusicWallFrontend - stop requested for album: {data.message}")
             peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
             self.current_album = None
             self.core.playback.stop()
             self.core.tracklist.clear()
-            self.send_cmd_to_peripheral(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+            self._send_cmd_to_peripheral(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
             return
         
         if self.current_album:
@@ -215,33 +216,31 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             self.core.playback.stop()
             self.core.tracklist.clear()
             peripheral_to_turn_off = self.mac_album_dict[self.current_album]
-            self.send_cmd_to_peripheral(peripheral_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+            self._send_cmd_to_peripheral(peripheral_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
 
-        self.current_album = album
-        album_uri = self.get_album_uri(album)
-        track_uris = self.get_album_track_uris(album_uri)
-        peripheral_to_turn_on = self.mac_album_dict[self.current_album]
+        self.current_album = data.message
+        album_uri = self._get_album_uri(self.current_album)
+        track_uris = self._get_album_track_uris(album_uri)
         self.core.tracklist.add(uris=track_uris)
         self.core.playback.play().get()
-        self.send_cmd_to_peripheral(peripheral_to_turn_on, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
+        self._send_cmd_to_peripheral(data.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
         logger.info(f"playing new album: {self.current_album}")
 
 
-    def get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
+    def _get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
         # Replace spaces with underscores to match your filesystem
         path = f"{media_dir}/{album_name}/"
         # Encode special characters (spaces, etc.) for a valid URI
         return f"file://{quote(path)}"
 
 
-    def get_album_track_uris(self, album_uri: str):
+    def _get_album_track_uris(self, album_uri: str):
         refs = self.core.library.browse(album_uri).get()
         track_uris = [ref.uri for ref in refs if ref.type == "track"]
         return track_uris
 
 
-    def send_cmd_to_peripheral(self, mac_address, command):
-        mac = [int(b, 16) for b in mac_address.split(":")]
+    def _send_cmd_to_peripheral(self, mac, command):
         payload = {
             "mac": mac,
             "command": command
@@ -250,53 +249,21 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.outgoing_handler_proxy.send_message(json_str)
 
 
-    def get_current_album(self):
-        track = self.core.playback.get_current_track().get()
-        if track is None:
-            logger.info(f"MusicWallFrontend - get_current_album = nothing in tracklist")
-            return None
-        
-        if track.uri:
-            path = track.uri.replace("file://", "")
-            folder = os.path.basename(os.path.dirname(path))
-            return folder
-
-        logger.info(f"MusicWallFrontend - missing track or track.uri - track: {track}")
-        return None
-
-
     def transform_serial(self, data):
         line = data.decode('utf-8').rstrip().strip()
         try:
             data = json.loads(line)
+            serData = SerialData(**data)
         except json.JSONDecodeError:
             logger.info(f"MusicWallFrontend: JSON DECODE ERROR FOR OBJ: '{line}' - len({len(line)})")
             return None
 
-        valid = (
-            isinstance(data, dict)
-            and "mac" in data
-            and "command" in data
-            and "message" in data
-            and isinstance(data["mac"], list)
-            and len(data["mac"]) == 6
-            and all(isinstance(b, int) and 0 <= b <= 255 for b in data["mac"])
-            and isinstance(data["command"], int)
-            and data["command"] in VALID_INCOMING_COMMANDS
-            and isinstance(data["message"], str)
-        )
-
-        if valid:
-            # logger.info(f"MusicWallFrontend validated json: '{json.dumps(data)}'")
-            mac = ":".join(f'{b:02X}' for b in data["mac"])
-            message = data["message"]
-            cmd = data["command"]
+        message = data["message"]
+        cmd = data["command"]
             
-            # debug messages come from central - no need to register central
-            if cmd != DEBUG:
-                self.mac_album_dict[mac] = message
-                self.mac_album_dict[message] = mac
-            
-            self.handle_command(cmd, message)
-        else:
-            logger.warn(f"MusicWallFrontend: JSON INVALID: '{line}' - len({len(line)})")
+        # debug messages come from central - no need to register central
+        if cmd != DEBUG:
+            self.mac_album_dict[serData.mac_str] = message
+            self.mac_album_dict[message] = serData
+        
+        self._handle_command(serData)
