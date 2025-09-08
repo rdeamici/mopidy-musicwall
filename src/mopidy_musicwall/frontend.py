@@ -42,10 +42,11 @@ OUTGOING_SERIAL_COMMANDS = {
     "INFO_REQUEST": INFO_REQUEST,
     "LIGHT_ON": LIGHT_ON,
     "LIGHT_OFF": LIGHT_OFF,
-    "NEW_CENTRAL": NEW_CENTRAL
+    "NEW_CENTRAL": NEW_CENTRAL,
+    "TOGGLE": TOGGLE
 }
 
-BROADCAST_ADDRESS = "0xFF:0xFF:0xFF:0xFF:0xFF:0xFF"
+BROADCAST_ADDRESS = [255, 255, 255, 255, 255, 255]
 
 
 class OutgoingSerialHandler(pykka.ThreadingActor):
@@ -132,8 +133,15 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         # logger.info(f"MusicWallFrontend: on_event called with event: {event}, kwargs: {kwargs}")
         
         if event == "track_playback_ended":
-            self.handle_track_playback_ended(kwargs.get("tl_track"))    
+            self.handle_track_playback_ended(kwargs.get("tl_track"))
+        
+        if event == "track_playback_started":
+             self.handle_track_playback_started(kwargs.get("tl_track"))
     
+
+    def handle_track_playback_started(self, tl_track):
+        self.current_album = tl_track.track.album.name
+        logger.info(f"MusicWallFrontend: new track started: current_album set to {self.current_album}")
 
     def handle_track_playback_ended(self, tl_track):
         '''Only used to handle the case where an album finishes naturally'''
@@ -141,8 +149,8 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         if self.current_album is None:
             logger.info("MusicWallFrontend: track_playback_ended - current_album is None, stop should have already been handled manually")
         
-        elif self.current_album != tl_track.track.album:
-            logger.info(f"MusicWallFrontend: track_playback_ended - old album `{tl_track.track.album}` ended, current album `{self.current_album}` should be playing")
+        elif self.current_album != tl_track.track.album.name:
+            logger.info(f"MusicWallFrontend: track_playback_ended - old album `{tl_track.track.album.name}` ended, current album `{self.current_album}` should be playing")
 
         elif self.core.tracklist.get_length().get() == 0:
             self._handle_current_album_finished()
@@ -153,8 +161,8 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
     def _handle_current_album_finished(self):
         logger.info("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
         self.core.playback.stop()
-        peripheral_mac = self.mac_album_dict[self.current_album]
-        self._send_cmd_to_peripheral(peripheral_mac, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        peripheral_mac: SerialData = self.mac_album_dict[self.current_album]
+        self._send_cmd_to_peripheral(peripheral_mac.mac_bytes , OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
         self.current_album = None
 
 
@@ -181,9 +189,9 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         logger.warn(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {data.message}")
 
 
-    def handle_toggle_http_request(self, peripheral_addres):
-        logger.info(f"MusicWallFrontend - received toggle request from http server for peripheral: {peripheral_addres}")
-        self._send_cmd_to_peripheral(peripheral_addres, OUTGOING_SERIAL_COMMANDS["TOGGLE"])
+    def handle_toggle_http_request(self, peripheral_address):
+        logger.info(f"MusicWallFrontend - received toggle request from http server for peripheral: {peripheral_address}")
+        self._send_cmd_to_peripheral(peripheral_address, OUTGOING_SERIAL_COMMANDS["TOGGLE"])
 
 
     def handle_info_response(self, data: SerialData):
@@ -204,21 +212,24 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         logger.info(f"MusicWallFrontend - handle_toggle - current_album: {self.current_album} - new_album: {data.message}")
         if data.message == self.current_album:
             logger.info(f"MusicWallFrontend - stop requested for album: {data.message}")
-            peripheral_mac_to_turn_off = self.mac_album_dict.get(self.current_album)
+            peripheral_mac_to_turn_off: SerialData = self.mac_album_dict[self.current_album]
             self.current_album = None
             self.core.playback.stop()
             self.core.tracklist.clear()
-            self._send_cmd_to_peripheral(peripheral_mac_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+            self._send_cmd_to_peripheral(peripheral_mac_to_turn_off.mac_bytes , OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
             return
         
         if self.current_album:
             logger.info(f"stopping current album: {self.current_album}")
             self.core.playback.stop()
             self.core.tracklist.clear()
-            peripheral_to_turn_off = self.mac_album_dict[self.current_album]
-            self._send_cmd_to_peripheral(peripheral_to_turn_off, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+            peripheral_mac_to_turn_off: SerialData = self.mac_album_dict.get(self.current_album)
+            # may not exist if album was started via Iris for example
+            if peripheral_mac_to_turn_off:
+                self._send_cmd_to_peripheral(peripheral_mac_to_turn_off.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
 
         self.current_album = data.message
+        logger.info(f"beginning to play new album: {self.current_album}")
         album_uri = self._get_album_uri(self.current_album)
         track_uris = self._get_album_track_uris(album_uri)
         self.core.tracklist.add(uris=track_uris)
@@ -240,7 +251,8 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         return track_uris
 
 
-    def _send_cmd_to_peripheral(self, mac, command):
+    def _send_cmd_to_peripheral(self, mac: list[int], command: int):
+        logger.info(f"in send_cmd_to_peripheral: mac - {mac} - command - {command}")
         payload = {
             "mac": mac,
             "command": command
