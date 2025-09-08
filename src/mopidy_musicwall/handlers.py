@@ -23,17 +23,18 @@ class HttpHandler(tornado.web.RequestHandler):
         self.core = core
         self.config = config
         frontends = pykka.ActorRegistry.get_by_class(MusicWallFrontend)
-        
+        logger.info("MusicWallHttpHandler: initializing...")
         if frontends and len(frontends) == 1:
             self.music_wall_frontend_proxy = frontends[0].proxy()
         elif (not frontends):
             logger.warn("MusicWallFrontend not found.")
+            self.music_wall_frontend_proxy = None
         elif len(frontends) > 1:
             logger.warn("MusicWallFrontend not found or multiple instances found.")
+            self.music_wall_frontend_proxy = None
         else:
             logger.warn("Soemthing weird happened.")
-        
-        self.music_wall_frontend_proxy = None
+            self.music_wall_frontend_proxy = None
 
     # Options request
     # This is a preflight request for CORS requests
@@ -42,9 +43,9 @@ class HttpHandler(tornado.web.RequestHandler):
     #     self.finish()
 
 
-    def post(self):
+    def get(self):
         """Handle POST /play?mac=xx:xx:xx:xx:xx:xx"""
-        mac = self.get_query_argument("mac", None)
+        mac = self.get_argument("mac", None)
         if not mac:
             self.set_status(400)
             self.write({"error": "Missing 'mac' parameter"})
