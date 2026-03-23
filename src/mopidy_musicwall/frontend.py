@@ -16,17 +16,25 @@ from . import Extension
 
 logger = logging.getLogger(__name__)
 
+# current list of supported commands
 REGISTER = 0
 INFO_RESPONSE = 1
 TOGGLE = 2
-DEBUG = 3
+SKIP = 3
+DEBUG = 4
 
 VALID_INCOMING_COMMANDS = {
     REGISTER: "register",
     INFO_RESPONSE: "info_response",
     TOGGLE: "toggle",
+    SKIP: "skip",
     DEBUG: "debug"
 }
+# ON = 1
+# OFF = 2
+# NEXT = 3
+# PREVIOUS
+# DEBUG = 4
 
 REGISTER_ACK = 0
 INFO_REQUEST = 1
@@ -161,8 +169,13 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
     def _handle_current_album_finished(self):
         logger.info("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
         self.core.playback.stop()
-        peripheral_mac: SerialData = self.mac_album_dict[self.current_album]
-        self._send_cmd_to_peripheral(peripheral_mac.mac_bytes , OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        peripheral_mac: SerialData = self.mac_album_dict.get(self.current_album)
+        if not peripheral_mac:
+            logger.warn(f"current album finished! but we can't find the peripheral mac address :(")
+            logger.warn(f"album dictionary: {self.mac_album_dict}")
+        else:
+            self._send_cmd_to_peripheral(peripheral_mac.mac_bytes , OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        
         self.current_album = None
 
 
@@ -223,7 +236,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             logger.info(f"stopping current album: {self.current_album}")
             self.core.playback.stop()
             self.core.tracklist.clear()
-            peripheral_mac_to_turn_off: SerialData = self.mac_album_dict.get(self.current_album)
+            peripheral_mac_to_turn_off: SerialData = self.mac_album_dict.get(self.current_album.lower())
             # may not exist if album was started via Iris for example
             if peripheral_mac_to_turn_off:
                 self._send_cmd_to_peripheral(peripheral_mac_to_turn_off.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
@@ -236,6 +249,13 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.core.playback.play().get()
         self._send_cmd_to_peripheral(data.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
         logger.info(f"playing new album: {self.current_album}")
+
+
+    def handle_skip(self, data: SerialData):
+        '''skip the currently playing song if the current album is the same as the peripheral that sent the request'''
+        logger.info(f"skip requested for album '{data.message}'. Current Album: '{self.current_album}'")
+        if data.message.lower() == self.current_album.lower():
+            self.core.playback.next()
 
 
     def _get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
@@ -262,12 +282,13 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def transform_serial(self, data):
-        line = data.decode('utf-8').rstrip().strip()
         try:
+            line = data.decode('utf-8').rstrip().strip()
             data = json.loads(line)
             serData = SerialData(**data)
-        except json.JSONDecodeError:
-            logger.info(f"MusicWallFrontend: JSON DECODE ERROR FOR OBJ: '{line}' - len({len(line)})")
+        except Exception as e:
+            logger.info(f"MusicWallFrontend: DECODE ERROR FOR OBJ: '{line}' - len({len(line)})")
+            logger.info(f"            ERROR: {e}")
             return None
 
         message = data["message"]
