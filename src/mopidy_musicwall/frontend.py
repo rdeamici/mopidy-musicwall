@@ -94,7 +94,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
         while self.running:
             line = self.serial_port.readline()
             if line:
-                # logger.info(f"IncomingSerialHandler received: {line}")
+                logger.info(f"IncomingSerialHandler received: {line}")
                 self.transform_serial(line)
 
     def transform_serial(self, raw_data):
