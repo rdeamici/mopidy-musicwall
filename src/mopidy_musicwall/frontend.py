@@ -338,6 +338,8 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def _get_album_track_uris(self, album_uri: str):
         refs = self.core.library.browse(album_uri).get()
+        for ref in refs:
+            logger.debug(f"MusicWallFrontend: fileUri - {ref.uri} filetype - {ref.type}")
         track_uris = [ref.uri for ref in refs if ref.type == "track"]
         return track_uris
 
