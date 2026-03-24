@@ -219,8 +219,11 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         album_uri = self._get_album_uri(album_name)
         logger.info(f"new album uri: {album_uri}")
         self.frame_registry.add_or_update(frame_address, album_uri)
-        logger.info(f"frame registery updated: {self.frame_registry.by_mac(frame_address)}")
-
+        updated = self.frame_registry.by_mac(frame_address)
+        if updated:
+            logger.info(f"frame registery updated: {updated.mac}: {updated.album_uri}")
+        else:
+            logger.warn(f"something went wrong! frame registry has no known mac {frame_address} after update")
 
     ######## Serial handlers: they do use SerialData ########
     def handle_command(self, data: SerialData):
