@@ -238,8 +238,12 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         if not frame:
             logger.info(f"Registering new frame: {data.mac_str}")
             self.frame_registry.add_or_update(data.mac_str)
-            self._send_cmd_to_peripheral(data.mac, REGISTER_ACK)
-        elif frame.is_lit:
+
+        # when a frame comes online, it sends a register command, even if it is already registered
+        # if it doesn't receive an acknowledgement it will continue to try to register
+        # need to acknowledge no matter what
+        self._send_cmd_to_peripheral(data.mac, REGISTER_ACK)
+        if frame and frame.is_lit:
             # a peripheral might go offline and then come back while
             # the record associated with it is already playing
             # in this case when it re-registers we need to turn it back on
