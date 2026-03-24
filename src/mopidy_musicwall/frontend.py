@@ -219,7 +219,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         album_uri = self._get_album_uri(album_name)
         logger.info(f"new album uri: {album_uri}")
         self.frame_registry.add_or_update(frame_address, album_uri)
-        logger.info(f"frame registery updated: {self.frame_registry.all_frames()}")
+        logger.info(f"frame registery updated: {self.frame_registry.by_mac(frame_address)}")
 
 
     ######## Serial handlers: they do use SerialData ########
