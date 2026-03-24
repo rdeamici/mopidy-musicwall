@@ -120,7 +120,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
         if serData.command == DEBUG:
             self.handle_debug(serData)
         else:
-            self.frontend_proxy._handle_command(serData).get()
+            self.frontend_proxy.handle_command(serData).get()
 
     def handle_debug(self, data: SerialData):
         logger.info(f"IncomingSerialHandler - DEBUG message from TRANSCEIVER: {data.message}")
@@ -220,13 +220,13 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     ######## Serial handlers: they do use SerialData ########
-    def _handle_command(self, data: SerialData):
+    def handle_command(self, data: SerialData):
         try:
             # Build method name conventionally
             method_name = f"handle_{VALID_INCOMING_COMMANDS[data.command]}"
             getattr(self, method_name)(data)
         except Exception as e:
-            logger.warn(f"MusicWallFrontend _handle_command error: {e}")
+            logger.warn(f"MusicWallFrontend handle_command error: {e}")
 
 
     def handle_register(self, data: SerialData):
