@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class HttpHandler(tornado.web.RequestHandler):
+class BaseMusicWallHttpHandler(tornado.web.RequestHandler):
     def set_default_headers(self):
         self.set_header("Access-Control-Allow-Origin", "*")
         self.set_header(
@@ -36,30 +36,59 @@ class HttpHandler(tornado.web.RequestHandler):
             logger.warn("Soemthing weird happened.")
             self.music_wall_frontend_proxy = None
 
-    # Options request
-    # This is a preflight request for CORS requests
-    # def options(self, slug=None):
-    #     self.set_status(204)
-    #     self.finish()
 
 
+class PlayHandler(BaseMusicWallHttpHandler):
     def get(self):
         """Handle POST /play?mac=xx:xx:xx:xx:xx:xx"""
-        mac = self.get_argument("mac", None)
-        if not mac:
+        mac_str = self.get_argument("mac", None)
+        if not mac_str:
             self.set_status(400)
             self.write({"error": "Missing 'mac' parameter"})
             return
 
-        logger.info("Received POST /play for MAC %s", mac)
+        logger.info("Received POST /play for MAC %s", mac_str)
 
         try:
-            mac =  [int(b, 16) for b in mac.split(":")]
-            self.music_wall_frontend_proxy.handle_toggle_http_request(mac).get()
+            mac_list =  [int(b, 16) for b in mac_str.split(":")]
+            self.music_wall_frontend_proxy.handle_toggle_http_request(mac_list).get()
         except Exception as e:
-            logger.exception("Failed to handle play for %s", mac)
+            logger.exception("Failed to handle play for %s", mac_str)
             self.set_status(500)
             self.write({"error": str(e)})
             return
 
-        self.write({"status": "request successful", "smart frame mac address": mac})
+        self.write({"status": "request successful", "smart frame mac address": mac_str})
+
+
+
+class UpdateHandler(BaseMusicWallHttpHandler):
+    # when typing urls into a browser, the browser can only send get requests
+    # TODO: create a proper frontend UI for this action
+
+    def get(self):
+        """Handle GET /update?mac=xx:xx:xx:xx:xx:xx&album_name=albumName"""
+        mac_str = self.get_argument("mac", None)
+        album_name = self.get_argument("album_name", None)
+
+        if not mac_str or not album_name:
+            self.set_status(400)
+            self.write({"error": "Missing required parameters"})
+            return
+
+        logger.info("Received POST /update for MAC %s with Album %s", mac_str, album_name)
+
+        try:
+            # We pass the strings to the frontend actor. 
+            # The Actor will handle calling registry.add_or_update(mac_str, album_uri)
+            self.music_wall_frontend_proxy.handle_new_album_association(mac_str, album_name).get()
+            
+            self.write({
+                "status": "association updated",
+                "mac": mac_str,
+                "album_name": album_name
+            })
+        except Exception as e:
+            logger.exception("Failed to update album for %s", mac_str)
+            self.set_status(500)
+            self.write({"error": str(e)})
