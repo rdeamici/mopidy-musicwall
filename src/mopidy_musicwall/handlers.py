@@ -76,7 +76,7 @@ class UpdateHandler(BaseMusicWallHttpHandler):
             self.write({"error": "Missing required parameters"})
             return
 
-        logger.info("Received POST /update for MAC %s with Album %s", mac_str, album_name)
+        logger.info("Received get /update for MAC %s with Album %s", mac_str, album_name)
 
         try:
             # We pass the strings to the frontend actor. 

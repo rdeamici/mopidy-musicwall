@@ -215,8 +215,11 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
 
     def handle_new_album_association(self, frame_address, album_name):
+        logger.info(f"new album association request for frame {frame_address} and album {album_name}")
         album_uri = self._get_album_uri(album_name)
+        logger.info(f"new album uri: {album_uri}")
         self.frame_registry.add_or_update(frame_address, album_uri)
+        logger.info(f"frame registery updated: {self.frame_registry.all_frames()}")
 
 
     ######## Serial handlers: they do use SerialData ########
@@ -279,7 +282,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         
         # nothing is playing, toggle requested album to ON
         if not current_playing_album:
-            logger.info(f"MusicWallFrontend: no album currently playing. playing new album for {data.mac_str}")
+            logger.info(f"MusicWallFrontend: no album currently playing.")
             self._play_new_album(requesting_frame)
             return
         
