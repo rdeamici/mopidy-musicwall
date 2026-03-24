@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # Define your schema
 class SerialData(BaseModel):
     mac: conlist(conint(ge=0, le=255), min_length=6, max_length=6)  # exactly 6 ints, 0–255
-    command: int = Field(..., ge=0, le=3)  # assuming your VALID_INCOMING_COMMANDS are non-negative ints
+    command: int = Field(..., ge=0, le=4)  # assuming your VALID_INCOMING_COMMANDS are non-negative ints
     message: str
 
     @property
