@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from pydantic.fields import Field
 from pydantic import ValidationError, conlist, conint
 from typing import List
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,15 @@ class Frame:
 
 
 class FrameRegistry:
-    def __init__(self, db_path="music_wall_db.json"):
-        self._db_path = db_path
-        self._frames = self._load_from_disk()
+    def __init__(self, base_dir="/var/lib/mopidy/music_wall"):
+        self._base_dir = Path(base_dir)
+        try:
+            self._base_dir.mkdir(parents=True, exist_ok=True)
+            self._db_path = f"{base_dir}/music_wall_db.json"
+            self._frames = self._load_from_disk()
+        except Exception as e:
+            logger.error(f"failed to make db path: {e}")
+            
     
 
     def _load_from_disk(self):

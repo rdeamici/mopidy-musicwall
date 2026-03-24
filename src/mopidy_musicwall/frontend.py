@@ -145,7 +145,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.baudrate = self.config.get("baudrate")
 
         # Defaulting to a hidden file in the user's home or a specific mopidy path
-        self.frame_registry = FrameRegistry("music_wall_frames.json")
+        self.frame_registry = FrameRegistry()
 
         logger.info(f"MusicWallFrontend initialized on serial port {self.ser_port} with baudrate {self.baudrate}")
         logger.info(f"Loaded {len(self.frame_registry)} frames from DB.")
