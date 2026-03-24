@@ -270,7 +270,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         if requesting_frame is None:
             logger.warn(f"MusicWallFrontend: unknown mac address requested {data.mac_str}")
             return
-        if requesting_frame.album_uri is None:
+        if not requesting_frame.album_uri:
             logger.warn(f"MusicWallFrontend: no album has been associated with this frame {data.mac_str}")
             return
             # TODO: send message to peripheral to blink lights to indicate its not fully registered with an album
@@ -279,6 +279,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         
         # nothing is playing, toggle requested album to ON
         if not current_playing_album:
+            logger.info(f"MusicWallFrontend: no album currently playing. playing new album for {data.mac_str}")
             self._play_new_album(requesting_frame)
             return
         
