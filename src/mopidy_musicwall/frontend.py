@@ -117,7 +117,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
             logger.info(f"            ERROR: {e}")
             return None
         
-        if serData["command"] == DEBUG:
+        if serData.command == DEBUG:
             self.handle_debug(serData)
         else:
             self.frontend_proxy._handle_command(serData).get()
