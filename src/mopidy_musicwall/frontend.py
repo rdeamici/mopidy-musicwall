@@ -329,6 +329,9 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def _get_currently_playing_album(self):
         current_track = self.core.playback.get_current_track().get()
+        logger.info(f"MusicWallFrontend: current playing album: {current_track.uri}")
+        logger.info(f"MusicWallFrontend: current playing album: {current_track.name}")
+        logger.info(f"MusicWallFrontend: current playing album: {current_track.album.uri}")
         return current_track.album if current_track else None
         
 
