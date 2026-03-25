@@ -281,23 +281,23 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             return
             # TODO: send message to peripheral to blink lights to indicate its not fully registered with an album
 
-        current_playing_album = self._get_currently_playing_album()
+        current_playing_album_uri = self._get_currently_playing_album_uri()
 
         # nothing is playing, toggle requested album to ON
-        if not current_playing_album:
+        if not current_playing_album_uri:
             logger.info(f"MusicWallFrontend: no album currently playing.")
             self._play_new_album(requesting_frame)
             return
 
         # toggle current album to OFF
         # currently playing may not be associated with a frame if it was started by iris or some other frontend
-        current_playing_frame = self.frame_registry.by_album_uri(current_playing_album.uri)        
+        current_playing_frame = self.frame_registry.by_album_uri(current_playing_album_uri)        
         if current_playing_frame and requesting_frame.album_uri == current_playing_frame.album_uri:
             logger.info(f"MusicWallFrontend: requested album is current album. toggling album off")
             self._stop_current_album()
             return
 
-        logger.info(f"current album is different from requested album: current_frame: {current_playing_album.uri} requested: {requesting_frame.album_uri}")
+        logger.info(f"current album is different from requested album: current_frame: {current_playing_album_uri} requested: {requesting_frame.album_uri}")
         # switch from one album to another
         # currently playing may not be associated with a frame if it was started by iris or some other frontend
         if current_playing_frame:
@@ -309,9 +309,9 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def handle_skip(self, data: SerialData):
         '''skip the currently playing song'''
-        current_album = self._get_currently_playing_album()
-        if current_album and current_album.name:
-            logger.info(f"skip requested from frame '{data.mac_str}'. Current Album: '{current_album.name}'")
+        current_album_uri = self._get_currently_playing_album_uri()
+        if current_album_uri:
+            logger.info(f"skip requested from frame '{data.mac_str}'. Current Album: '{current_album_uri}'")
             self.core.playback.next()
 
 
