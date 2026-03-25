@@ -87,7 +87,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
     def on_start(self):
         self.running = True
         self.thread = threading.Thread(target=self.read_loop, daemon=True)
-        self.thread.start()    
+        self.thread.start()
 
 
     def read_loop(self):
@@ -116,7 +116,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
             logger.info(f"MusicWallFrontend: ERROR converting to SerialData for obj: '{data}' - len({len(data)})")
             logger.info(f"            ERROR: {e}")
             return None
-        
+
         if serData.command == DEBUG:
             self.handle_debug(serData)
         else:
@@ -130,7 +130,7 @@ class IncomingSerialHandler(pykka.ThreadingActor):
         self.running = False
         if self.thread.is_alive():
             self.thread.join()
-            
+
 
 
 class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
@@ -171,13 +171,13 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def on_event(self, event, **kwargs):
         # logger.info(f"MusicWallFrontend: on_event called with event: {event}, kwargs: {kwargs}")
-        
+
         if event == "track_playback_ended":
             self._on_track_playback_ended(kwargs.get("tl_track"))
-        
+
         if event == "track_playback_started":
              self._on_track_playback_started(kwargs.get("tl_track"))
-    
+
 
     ######## event callback handler helper functions ########
     def _on_track_playback_started(self, tl_track):
@@ -237,10 +237,10 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def handle_register(self, data: SerialData):
         logger.info(f"MusicWallFrontend: _handle_register called from frame: '{data.mac_str}'")
-        
+
         # if it's a new peripheral, add it's mac address to the db with an empty album
         # user needs to associate the frame with an album before we can play the album
-        frame = self.frame_registry.by_mac(data.mac_str) 
+        frame = self.frame_registry.by_mac(data.mac_str)
         if not frame:
             logger.info(f"Registering new frame: {data.mac_str}")
             self.frame_registry.add_or_update(data.mac_str)
@@ -282,19 +282,19 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             # TODO: send message to peripheral to blink lights to indicate its not fully registered with an album
 
         current_playing_album = self._get_currently_playing_album()
-        
+
         # nothing is playing, toggle requested album to ON
         if not current_playing_album:
             logger.info(f"MusicWallFrontend: no album currently playing.")
             self._play_new_album(requesting_frame)
             return
-        
+
         # toggle current album to OFF
         if requesting_frame.album_uri == current_playing_album.uri:
             logger.info(f"MusicWallFrontend: requested album is current album. toggling album off")
             self._stop_current_album()
             return
-        
+
         logger.info(f"current album is different from requested album: current_frame: {current_playing_album.uri} requested: {requesting_frame.album_uri}")
         # switch from one album to another
         current_playing_frame = self.frame_registry.by_album_uri(current_playing_album.uri)        
@@ -304,7 +304,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             current_playing_frame.is_lit = False
         self._stop_current_album()
         self._play_new_album(requesting_frame)
- 
+
 
     def handle_skip(self, data: SerialData):
         '''skip the currently playing song'''
@@ -333,9 +333,10 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             logger.warning("MusicWallFrontend: Playback state is not 'playing'.")
             return None
         current_track = self.core.playback.get_current_track().get()
-        logger.info(f"MusicWallFrontend: current playing album: {current_track}")
+        logger.info(f"MusicWallFrontend: current playing track: {current_track}")
+        logger.info(f"MusicWallFrontend: album info for current playing track: {current_track.album}")
         return current_track.album if current_track else None
-        
+
 
     def _get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
         path = f"{media_dir}/{album_name}/"
