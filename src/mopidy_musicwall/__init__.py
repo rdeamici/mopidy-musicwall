@@ -37,10 +37,11 @@ class Extension(ext.Extension):
         )
 
 def musicwall_factory(config, core):
-    from .handlers import HttpHandler
+    from .handlers import PlayHandler, UpdateHandler
 
     path = pathlib.Path(__file__).parent / "static"
 
     return [
-        ('/play', HttpHandler, {"core": core, "config": config})
+        ('/play', PlayHandler, {"core": core, "config": config}),
+        ('/update', UpdateHandler, {"core": core, "config": config})
     ]

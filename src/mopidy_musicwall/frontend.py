@@ -3,7 +3,7 @@ import os
 import threading
 import time
 import json
-from mopidy_musicwall.types import SerialData
+from mopidy_musicwall.types import SerialData, FrameRegistry
 import pykka
 import requests
 import io
@@ -16,17 +16,25 @@ from . import Extension
 
 logger = logging.getLogger(__name__)
 
+# current list of supported commands
 REGISTER = 0
 INFO_RESPONSE = 1
 TOGGLE = 2
-DEBUG = 3
+SKIP = 3
+DEBUG = 4
 
 VALID_INCOMING_COMMANDS = {
     REGISTER: "register",
     INFO_RESPONSE: "info_response",
     TOGGLE: "toggle",
+    SKIP: "skip",
     DEBUG: "debug"
 }
+# ON = 1
+# OFF = 2
+# NEXT = 3
+# PREVIOUS
+# DEBUG = 4
 
 REGISTER_ACK = 0
 INFO_REQUEST = 1
@@ -40,10 +48,10 @@ VALID_OUTGOING_COMMANDS = { REGISTER_ACK, INFO_REQUEST, TOGGLE, LIGHT_ON, LIGHT_
 OUTGOING_SERIAL_COMMANDS = {
     "REGISTER_ACK": REGISTER_ACK,
     "INFO_REQUEST": INFO_REQUEST,
+    "TOGGLE": TOGGLE,
     "LIGHT_ON": LIGHT_ON,
     "LIGHT_OFF": LIGHT_OFF,
     "NEW_CENTRAL": NEW_CENTRAL,
-    "TOGGLE": TOGGLE
 }
 
 BROADCAST_ADDRESS = [255, 255, 255, 255, 255, 255]
@@ -79,22 +87,50 @@ class IncomingSerialHandler(pykka.ThreadingActor):
     def on_start(self):
         self.running = True
         self.thread = threading.Thread(target=self.read_loop, daemon=True)
-        self.thread.start()    
+        self.thread.start()
 
 
     def read_loop(self):
         while self.running:
             line = self.serial_port.readline()
             if line:
-                # logger.info(f"IncomingSerialHandler received: {line}")
-                self.frontend_proxy.transform_serial(line).get()
+                logger.info(f"IncomingSerialHandler received: {line}")
+                self.transform_serial(line)
+
+    def transform_serial(self, raw_data):
+        try:
+            line = raw_data.decode('utf-8').rstrip().strip()
+        except Exception as e:
+            logger.info(f"MusicWallFrontend: DECODE ERROR FOR OBJ: '{raw_data}' - len({len(raw_data)})")
+            logger.info(f"            ERROR: {e}")
+            return None
+        try:
+            data = json.loads(line)
+        except Exception as e:
+            logger.info(f"MusicWallFrontend: JSON LOAD ERROR FOR OBJ: '{line}' - len({len(line)})")
+            logger.info(f"            ERROR: {e}")
+            return None
+        try:
+           serData = SerialData(**data)
+        except Exception as e:
+            logger.info(f"MusicWallFrontend: ERROR converting to SerialData for obj: '{data}' - len({len(data)})")
+            logger.info(f"            ERROR: {e}")
+            return None
+
+        if serData.command == DEBUG:
+            self.handle_debug(serData)
+        else:
+            self.frontend_proxy.handle_command(serData).get()
+
+    def handle_debug(self, data: SerialData):
+        logger.info(f"IncomingSerialHandler - DEBUG message from TRANSCEIVER: {data.message}")
 
 
     def on_stop(self):
         self.running = False
         if self.thread.is_alive():
             self.thread.join()
-            
+
 
 
 class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
@@ -107,11 +143,15 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         # relies on mopidy-http to be configured and running
         self.ser_port = self.config.get("port")
         self.baudrate = self.config.get("baudrate")
-        self.mac_album_dict = {}
-        self.current_album = None
+
+        # Defaulting to a hidden file in the user's home or a specific mopidy path
+        self.frame_registry = FrameRegistry()
+
         logger.info(f"MusicWallFrontend initialized on serial port {self.ser_port} with baudrate {self.baudrate}")
+        logger.info(f"Loaded {len(self.frame_registry)} frames from DB.")
 
 
+    ######## event handler callback functions ########
     def on_start(self):
         self.serial = serial.Serial(self.ser_port, self.baudrate, timeout=1)
         self.incoming_handler = IncomingSerialHandler.start(self.serial, self.actor_ref.proxy())
@@ -131,115 +171,177 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def on_event(self, event, **kwargs):
         # logger.info(f"MusicWallFrontend: on_event called with event: {event}, kwargs: {kwargs}")
-        
+
         if event == "track_playback_ended":
-            self.handle_track_playback_ended(kwargs.get("tl_track"))
-        
+            self._on_track_playback_ended(kwargs.get("tl_track"))
+
         if event == "track_playback_started":
-             self.handle_track_playback_started(kwargs.get("tl_track"))
-    
+             self._on_track_playback_started(kwargs.get("tl_track"))
 
-    def handle_track_playback_started(self, tl_track):
-        self.current_album = tl_track.track.album.name
-        logger.info(f"MusicWallFrontend: new track started: current_album set to {self.current_album}")
 
-    def handle_track_playback_ended(self, tl_track):
-        '''Only used to handle the case where an album finishes naturally'''
+    ######## event callback handler helper functions ########
+    def _on_track_playback_started(self, tl_track):
+        logger.info(f"MusicWallFrontend: new track started from album: {tl_track.track.album.name}")
+        frame = self.frame_registry.by_album_uri(tl_track.track.album.uri)
+        if frame and not frame.is_lit:
+            self._send_cmd_to_peripheral(frame.mac, LIGHT_ON)
+            frame.is_lit = True
 
-        if self.current_album is None:
-            logger.info("MusicWallFrontend: track_playback_ended - current_album is None, stop should have already been handled manually")
-        
-        elif self.current_album != tl_track.track.album.name:
-            logger.info(f"MusicWallFrontend: track_playback_ended - old album `{tl_track.track.album.name}` ended, current album `{self.current_album}` should be playing")
 
-        elif self.core.tracklist.get_length().get() == 0:
-            self._handle_current_album_finished()
+    def _on_track_playback_ended(self, tl_track):
+        logger.info(f"MusicWallFrontend: track ended from album: {tl_track.track.album.name}")
+        ending_album_frame = self.frame_registry.by_album_uri(tl_track.track.album.uri)
+        if not ending_album_frame:
+            # albums can be started by other services like iris so may not
+            # always be associated with a frame
+            return
+
+        current_playing_album_uri = self._get_currently_playing_album_uri()
+
+        is_manual_stop = not ending_album_frame.is_lit
+        is_natural_end = not current_playing_album_uri
+        # ending album is associated with a frame and has been manually marked as turned off
+        # OR track that just ended is the last track in the album, album has ended naturally
+        if is_manual_stop or is_natural_end:
+            self._send_cmd_to_peripheral(ending_album_frame.mac,  LIGHT_OFF)
+            # redundent for manual_stops
+            ending_album_frame.is_lit = False
+
+
+    ######## HTTP handlers: they don't use SerialData ########
+    def handle_toggle_http_request(self, peripheral_address):
+        logger.info(f"MusicWallFrontend - received toggle request from http server for peripheral: {peripheral_address}")
+        self._send_cmd_to_peripheral(peripheral_address, TOGGLE)
+
+
+    def handle_new_album_association(self, frame_address, album_name):
+        logger.info(f"new album association request for frame {frame_address} and album {album_name}")
+        album_uri = self._get_album_uri(album_name)
+        logger.info(f"new album uri: {album_uri}")
+        self.frame_registry.add_or_update(frame_address, album_uri)
+        updated = self.frame_registry.by_mac(frame_address)
+        if updated:
+            logger.info(f"frame registery updated: {updated.mac}: {updated.album_uri}")
         else:
-            logger.info(f"MusicWallFrontend: track_playback_ended - tracklist not empty, another track from `{self.current_album}` should be playing")
+            logger.warn(f"something went wrong! frame registry has no known mac {frame_address} after update")
 
-
-    def _handle_current_album_finished(self):
-        logger.info("MusicWallFrontend: track_playback_ended- tracklist is empty - album has finished playing naturally, turning off peripheral lights")
-        self.core.playback.stop()
-        peripheral_mac: SerialData = self.mac_album_dict[self.current_album]
-        self._send_cmd_to_peripheral(peripheral_mac.mac_bytes , OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
-        self.current_album = None
-
-
-    def _handle_command(self, data: SerialData):
+    ######## Serial handlers: they do use SerialData ########
+    def handle_command(self, data: SerialData):
         try:
             # Build method name conventionally
             method_name = f"handle_{VALID_INCOMING_COMMANDS[data.command]}"
             getattr(self, method_name)(data)
         except Exception as e:
-            logger.warn(f"MusicWallFrontend _handle_command error: {e}")
+            logger.warn(f"MusicWallFrontend handle_command error: {e}")
 
 
     def handle_register(self, data: SerialData):
-        logger.info(f"MusicWallFrontend: _handle_register called with: '{data.message}'")
-        self._send_cmd_to_peripheral(data.mac_bytes, REGISTER_ACK)
-        # a peripheral might go offline and then come back while
-        # the record associated with it is already playing
-        # in this case when it re-registers we need to turn it back on
-        if self.current_album == data.message:
-            self._send_cmd_to_peripheral(data.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
+        logger.info(f"MusicWallFrontend: _handle_register called from frame: '{data.mac_str}'")
 
+        # if it's a new peripheral, add it's mac address to the db with an empty album
+        # user needs to associate the frame with an album before we can play the album
+        frame = self.frame_registry.by_mac(data.mac_str)
+        if not frame:
+            logger.info(f"Registering new frame: {data.mac_str}")
+            self.frame_registry.add_or_update(data.mac_str)
 
-    def handle_debug(self, data: SerialData):
-        logger.warn(f"MusicWallFrontend - DEBUG message from TRANSCEIVER: {data.message}")
-
-
-    def handle_toggle_http_request(self, peripheral_address):
-        logger.info(f"MusicWallFrontend - received toggle request from http server for peripheral: {peripheral_address}")
-        self._send_cmd_to_peripheral(peripheral_address, OUTGOING_SERIAL_COMMANDS["TOGGLE"])
+        # when a frame comes online, it sends a register command, even if it is already registered
+        # if it doesn't receive an acknowledgement it will continue to try to register
+        # need to acknowledge no matter what
+        self._send_cmd_to_peripheral(data.mac, REGISTER_ACK)
+        if frame and frame.is_lit:
+            # a peripheral might go offline and then come back while
+            # the record associated with it is already playing
+            # in this case when it re-registers we need to turn it back on
+            self._send_cmd_to_peripheral(data.mac, LIGHT_ON)
 
 
     def handle_info_response(self, data: SerialData):
         '''
-        used to associate a peripheral mac address with an album.
-        mac address and album is stored in dictionary in the
-        transform serial step so nothing to do here.
+        this should be deprecated
         '''
-        logger.info(f"MusicWallFrontend - received info response from peripheral: {data.message}")
+        logger.info(f"MusicWallFrontend - received info response from peripheral: {data.mac_str}")
 
 
     def handle_toggle(self, data: SerialData):
         '''Three states this handler handles:
-            1. An album is playing, and it's the requested album - stop it
+            1. No album is playing, start the requested album
+            2. An album is playing, and it's the requested album - stop it
             2. An album is playing, and it's a different album - stop the current one and start the requested one
-            3. No album is playing, start the requested album
         '''
-        logger.info(f"MusicWallFrontend - handle_toggle - current_album: {self.current_album} - new_album: {data.message}")
-        if data.message == self.current_album:
-            logger.info(f"MusicWallFrontend - stop requested for album: {data.message}")
-            peripheral_mac_to_turn_off: SerialData = self.mac_album_dict[self.current_album]
-            self.current_album = None
-            self.core.playback.stop()
-            self.core.tracklist.clear()
-            self._send_cmd_to_peripheral(peripheral_mac_to_turn_off.mac_bytes , OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
-            return
-        
-        if self.current_album:
-            logger.info(f"stopping current album: {self.current_album}")
-            self.core.playback.stop()
-            self.core.tracklist.clear()
-            peripheral_mac_to_turn_off: SerialData = self.mac_album_dict.get(self.current_album)
-            # may not exist if album was started via Iris for example
-            if peripheral_mac_to_turn_off:
-                self._send_cmd_to_peripheral(peripheral_mac_to_turn_off.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_OFF"])
+        logger.info(f"MusicWallFrontend - handle_toggle request from {data.mac_str}")
 
-        self.current_album = data.message
-        logger.info(f"beginning to play new album: {self.current_album}")
-        album_uri = self._get_album_uri(self.current_album)
-        track_uris = self._get_album_track_uris(album_uri)
+        # step 1: validate data
+        requesting_frame = self.frame_registry.by_mac(data.mac_str)
+        if requesting_frame is None:
+            logger.warn(f"MusicWallFrontend: unknown mac address requested {data.mac_str}")
+            return
+        if not requesting_frame.album_uri:
+            logger.warn(f"MusicWallFrontend: no album has been associated with this frame {data.mac_str}")
+            return
+            # TODO: send message to peripheral to blink lights to indicate its not fully registered with an album
+
+        current_playing_album_uri = self._get_currently_playing_album_uri()
+
+        # nothing is playing, toggle requested album to ON
+        if not current_playing_album_uri:
+            logger.info(f"MusicWallFrontend: no album currently playing.")
+            self._play_new_album(requesting_frame)
+            return
+
+        # toggle current album to OFF
+        # currently playing may not be associated with a frame if it was started by iris or some other frontend
+        current_playing_frame = self.frame_registry.by_album_uri(current_playing_album_uri)        
+        if current_playing_frame and requesting_frame.album_uri == current_playing_frame.album_uri:
+            logger.info(f"MusicWallFrontend: requested album is current album. toggling album off")
+            self._stop_current_album()
+            return
+
+        logger.info(f"current album is different from requested album: current_frame: {current_playing_album_uri} requested: {requesting_frame.album_uri}")
+        # switch from one album to another
+        # currently playing may not be associated with a frame if it was started by iris or some other frontend
+        if current_playing_frame:
+            # manually mark current playing frame as off so callback will turn off the light 
+            current_playing_frame.is_lit = False
+        self._stop_current_album()
+        self._play_new_album(requesting_frame)
+
+
+    def handle_skip(self, data: SerialData):
+        '''skip the currently playing song'''
+        current_album_uri = self._get_currently_playing_album_uri()
+        if current_album_uri:
+            logger.info(f"skip requested from frame '{data.mac_str}'. Current Album: '{current_album_uri}'")
+            self.core.playback.next()
+
+
+    ######## HELPER functions ########
+    def _play_new_album(self, requesting_frame):
+        logger.info(f"beginning to play new album: {requesting_frame.album_uri}")
+        track_uris = self._get_album_track_uris(requesting_frame.album_uri)
         self.core.tracklist.add(uris=track_uris)
         self.core.playback.play().get()
-        self._send_cmd_to_peripheral(data.mac_bytes, OUTGOING_SERIAL_COMMANDS["LIGHT_ON"])
-        logger.info(f"playing new album: {self.current_album}")
+
+
+    def _stop_current_album(self):
+        self.core.playback.stop()
+        self.core.tracklist.clear()
+
+
+    def _get_currently_playing_album_uri(self):
+        state = self.core.playback.get_state().get()
+        if state != "playing":
+            logger.warning("MusicWallFrontend: Playback state is not 'playing'.")
+            return None
+        current_track = self.core.playback.get_current_track().get()
+        album_uri = current_track.album.uri
+        if album_uri is None:
+            album_uri = os.path.dirname(current_track.uri) + "/"
+        logger.info(f"MusicWallFrontend: album_uri is: {album_uri}")
+        return album_uri
 
 
     def _get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
-        # Replace spaces with underscores to match your filesystem
         path = f"{media_dir}/{album_name}/"
         # Encode special characters (spaces, etc.) for a valid URI
         return f"file://{quote(path)}"
@@ -247,6 +349,8 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
 
     def _get_album_track_uris(self, album_uri: str):
         refs = self.core.library.browse(album_uri).get()
+        for ref in refs:
+            logger.info(f"MusicWallFrontend: fileUri - {ref.uri} filetype - {ref.type}")
         track_uris = [ref.uri for ref in refs if ref.type == "track"]
         return track_uris
 
@@ -259,23 +363,3 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         }
         json_str = json.dumps(payload)
         self.outgoing_handler_proxy.send_message(json_str)
-
-
-    def transform_serial(self, data):
-        line = data.decode('utf-8').rstrip().strip()
-        try:
-            data = json.loads(line)
-            serData = SerialData(**data)
-        except json.JSONDecodeError:
-            logger.info(f"MusicWallFrontend: JSON DECODE ERROR FOR OBJ: '{line}' - len({len(line)})")
-            return None
-
-        message = data["message"]
-        cmd = data["command"]
-            
-        # debug messages come from central - no need to register central
-        if cmd != DEBUG:
-            self.mac_album_dict[serData.mac_str] = message
-            self.mac_album_dict[message] = serData
-        
-        self._handle_command(serData)
