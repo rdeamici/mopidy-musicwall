@@ -196,10 +196,10 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             # always be associated with a frame
             return
 
-        current_playing_album = self._get_currently_playing_album()
+        current_playing_album_uri = self._get_currently_playing_album_uri()
 
         is_manual_stop = not ending_album_frame.is_lit
-        is_natural_end = not current_playing_album
+        is_natural_end = not current_playing_album_uri
         # ending album is associated with a frame and has been manually marked as turned off
         # OR track that just ended is the last track in the album, album has ended naturally
         if is_manual_stop or is_natural_end:
@@ -328,15 +328,17 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         self.core.tracklist.clear()
 
 
-    def _get_currently_playing_album(self):
+    def _get_currently_playing_album_uri(self):
         state = self.core.playback.get_state().get()
         if state != "playing":
             logger.warning("MusicWallFrontend: Playback state is not 'playing'.")
             return None
         current_track = self.core.playback.get_current_track().get()
-        logger.info(f"MusicWallFrontend: current playing track: {current_track}")
-        logger.info(f"MusicWallFrontend: album info for current playing track: {current_track.album}")
-        return current_track.album if current_track else None
+        album_uri = current_track.album.uri
+        if album_uri is None:
+            album_uri = os.path.dirname(current_track.uri) + "/"
+        logger.info(f"MusicWallFrontend: album_uri is: {album_uri}")
+        return album_uri
 
 
     def _get_album_uri(self, album_name: str, media_dir="/media/usb/music"):
