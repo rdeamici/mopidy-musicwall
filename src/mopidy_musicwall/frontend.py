@@ -333,9 +333,7 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
             logger.warning("MusicWallFrontend: Playback state is not 'playing'.")
             return None
         current_track = self.core.playback.get_current_track().get()
-        logger.info(f"MusicWallFrontend: current playing album: {current_track.uri}")
-        logger.info(f"MusicWallFrontend: current playing album: {current_track.name}")
-        logger.info(f"MusicWallFrontend: current playing album: {current_track.album.uri}")
+        logger.info(f"MusicWallFrontend: current playing album: {current_track}")
         return current_track.album if current_track else None
         
 
