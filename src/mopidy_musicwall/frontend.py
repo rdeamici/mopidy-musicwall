@@ -291,9 +291,11 @@ class MusicWallFrontend(pykka.ThreadingActor, CoreListener):
         
         # toggle current album to OFF
         if requesting_frame.album_uri == current_playing_album.uri:
+            logger.info(f"MusicWallFrontend: requested album is current album. toggling album off")
             self._stop_current_album()
             return
         
+        logger.info(f"current album is different from requested album: current_frame: {current_playing_album.uri} requested: {requesting_frame.album_uri}")
         # switch from one album to another
         current_playing_frame = self.frame_registry.by_album_uri(current_playing_album.uri)        
         # currently playing may not be associated with a frame if it was started by iris or some other frontend
